@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 380" width="64" height="64" role="img" xmlns:c2pa="http://c2pa.org/manifest">
+  <title>Dhara logo</title>
+  <style>
+    .m { fill: #111111; }
+    @media (prefers-color-scheme: dark) { .m { fill: #ffffff; } }
+  </style>
+  <defs>
+    <path id="layer" d="M50 130 C110 215 250 200 330 80 C240 150 120 160 50 100 Q34 115 50 130 Z"/>
+  </defs>
+  <g class="m" transform="translate(0,-6)">
+    <use href="#layer"/>
+    <use href="#layer" transform="translate(0,62)"/>
+    <use href="#layer" transform="translate(0,124)"/>
+  </g>
+</svg>
