@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { WALLET_DIR, writeConfig } from "@/lib/server/config";
 import { handleError } from "@/lib/server/api";
 import { assertSetupAllowed } from "@/lib/server/setupGuard";
@@ -37,9 +38,53 @@ const ALLOWED_FILES = new Set([
 const MAX_FILE_BYTES = 2 * 1024 * 1024; // real wallet files are < 100 KB
 const MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 
+/**
+ * R1: read a zip entry as a stream and abort as soon as `max` bytes are seen.
+ * The header-recorded `uncompressedSize` is attacker-controlled — a forged
+ * header ("100 B") previously let a 400 MB bomb inflate fully into memory
+ * before the post-hoc length check fired. Counting the actual decompressed
+ * bytes is the only trustworthy limit.
+ */
+function readCapped(entry: JSZip.JSZipObject, max: number, name: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let n = 0;
+    const s = entry.nodeStream() as unknown as Readable;
+    s.on("data", (c: Buffer) => {
+      n += c.length;
+      if (n > max) {
+        s.destroy();
+        reject(new DharaError(`Wallet file too large: ${name}`, 400, "wallet_too_big"));
+      } else {
+        chunks.push(c);
+      }
+    });
+    s.on("end", () => resolve(Buffer.concat(chunks)));
+    s.on("error", (err: unknown) => {
+      s.destroy();
+      reject(
+        err instanceof DharaError
+          ? err
+          : new DharaError(`Failed to read wallet zip entry: ${name}`, 400, "wallet_invalid")
+      );
+    });
+  });
+}
+
 export async function POST(req: NextRequest) {
   try {
     await assertSetupAllowed(req);
+
+    // R1: reject oversized uploads BEFORE formData() buffers the whole body.
+    // 5 MB zip cap + multipart overhead margin; chunked bodies without a
+    // Content-Length fall through to the per-entry stream cap below.
+    const clen = Number(req.headers.get("content-length") ?? 0);
+    if (clen > 6 * 1024 * 1024) {
+      return NextResponse.json(
+        { ok: false, error: "Wallet zip too large (max 5MB)", code: "wallet_too_big" },
+        { status: 400 }
+      );
+    }
 
     const form = await req.formData();
     const file = form.get("wallet");
@@ -66,12 +111,13 @@ export async function POST(req: NextRequest) {
         const name = path.basename(entry.name);
         if (!ALLOWED_FILES.has(name)) continue; // junk / dotfiles / nested paths dropped
 
-        // zip-bomb guard: check the recorded uncompressed size BEFORE inflating
+        // zip-bomb guard (fast path): the recorded size rejects honest bombs
+        // instantly; readCapped() below is the authoritative forged-header guard
         const meta = (entry as unknown as { _data?: { uncompressedSize?: number } })._data;
         if (meta?.uncompressedSize && meta.uncompressedSize > MAX_FILE_BYTES) {
           throw new DharaError(`Wallet file too large: ${name}`, 400, "wallet_too_big");
         }
-        const content = await entry.async("nodebuffer");
+        const content = await readCapped(entry, MAX_FILE_BYTES, name);
         total += content.length;
         if (content.length > MAX_FILE_BYTES || total > MAX_TOTAL_BYTES) {
           throw new DharaError(

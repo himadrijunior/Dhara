@@ -44,7 +44,17 @@ export async function verifyPassword(plain: string, hash: string | null): Promis
 
 export async function getJwtSecret(): Promise<string> {
   const cfg = await readConfig();
-  return cfg?.jwtSecret ?? "dhara-dev-secret-do-not-use-in-prod";
+  // security (R8): never fall back to a predictable/hardcoded secret. Tokens
+  // are only needed once the instance is configured — the Setup Wizard writes
+  // a strong random secret into .dhara/config.json (0600) on first save.
+  if (!cfg?.jwtSecret) {
+    throw new DharaError(
+      "JWT secret missing — complete the Setup Wizard first",
+      503,
+      "not_configured"
+    );
+  }
+  return cfg.jwtSecret;
 }
 
 export interface JwtClaims {
@@ -103,6 +113,35 @@ export function rateLimit(key: string, limit = 120, windowMs = 60_000) {
     return { ok: false, remaining: 0, resetInMs: b.resetAt - now };
   }
   return { ok: true, remaining: limit - b.count, resetInMs: b.resetAt - now };
+}
+
+/**
+ * Failure-only rate limiting (R2): IP buckets must count FAILED attempts only,
+ * so one attacker cannot lock legitimate users out by burning a shared quota
+ * with their own failed requests. Success never touches the bucket.
+ */
+export function failureCount(key: string): number {
+  const b = buckets.get(key);
+  if (!b || b.resetAt <= Date.now()) return 0;
+  return b.count;
+}
+
+export function failureResetInMs(key: string, windowMs = 15 * 60_000): number {
+  const b = buckets.get(key);
+  if (!b || b.resetAt <= Date.now()) return 0;
+  return b.resetAt - Date.now() || windowMs;
+}
+
+/** Record one failed attempt. Returns true when the bucket is now over the limit. */
+export function recordFailure(key: string, limit = 20, windowMs = 15 * 60_000): boolean {
+  const now = Date.now();
+  const b = buckets.get(key);
+  if (!b || b.resetAt <= now) {
+    buckets.set(key, { count: 1, resetAt: now + windowMs });
+    return false;
+  }
+  b.count += 1;
+  return b.count > limit;
 }
 
 // Prevent unbounded growth of the in-memory limiter

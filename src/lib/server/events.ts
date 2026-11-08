@@ -1,6 +1,7 @@
 import { q, DharaError } from "./oracle";
 import { readConfig } from "./config";
 import { hmacSign, uuid } from "./security";
+import dns from "node:dns/promises";
 
 /**
  * Dhara — change events: Realtime broadcast (Socket.IO service) +
@@ -108,7 +109,9 @@ export function assertPublicUrl(raw: string): void {
   if (!host || BLOCKED_HOSTNAMES.has(host) || host.endsWith(".local") || host.endsWith(".internal")) {
     throw new DharaError("Webhook URL must not target internal hosts", 400, "ssrf_blocked");
   }
-  // IPv6 literals: ::1, fc00::/7, fe80::/10, ::ffff:<ipv4>
+  // IPv6 literals: ::1, fc00::/7, fe80::/10, and IPv4-mapped forms in BOTH
+  // notations — dotted (::ffff:127.0.0.1) and hex (::ffff:7f00:1, which is
+  // what WHATWG URL canonicalizes http://[::ffff:127.0.0.1]/ into)
   if (host.includes(":")) {
     const h = host.replace(/^\[|\]$/g, "");
     const v6 = h.toLowerCase();
@@ -120,11 +123,13 @@ export function assertPublicUrl(raw: string): void {
       v6.startsWith("fe9") ||
       v6.startsWith("fea") ||
       v6.startsWith("feb") ||
-      v6.startsWith("::ffff:127.") ||
-      v6.startsWith("::ffff:10.") ||
-      v6.startsWith("::ffff:192.168.")
+      /^::ffff:/.test(v6)
     ) {
-      throw new DharaError("Webhook URL must not target internal addresses", 400, "ssrf_blocked");
+      // delegate every ::ffff:* form (dotted or hex) to isPrivateIp, which
+      // decodes the mapped 32 bits and applies the full private-range rules
+      if (isPrivateIp(v6)) {
+        throw new DharaError("Webhook URL must not target internal addresses", 400, "ssrf_blocked");
+      }
     }
   }
   // IPv4 literals + IPv4-mapped forms
@@ -145,6 +150,61 @@ export function assertPublicUrl(raw: string): void {
   }
 }
 
+/**
+ * M12 — DNS-level SSRF check: resolve the hostname and validate EVERY address
+ * (including IPv4-mapped `::ffff:` forms). Blocks hostnames that resolve to
+ * loopback/private/link-local ranges — the hostname-literal check above cannot
+ * catch those. Re-validated before every delivery (a webhook may have been
+ * created before this fix existed).
+ */
+export function isPrivateIp(ip: string): boolean {
+  let v4 = ip.toLowerCase().replace(/^\[|\]$/g, "");
+  if (v4.includes(":")) {
+    if (v4 === "::1" || v4 === "::") return true;
+    if (v4.startsWith("fc") || v4.startsWith("fd") || v4.startsWith("fe8") || v4.startsWith("fe9") || v4.startsWith("fea") || v4.startsWith("feb")) return true;
+    // ::ffff:a.b.c.d mapped form (WHATWG URL may also emit the hex form
+    // ::ffff:7f00:1 for http://[::ffff:127.0.0.1]/ — decode that too)
+    const mapped = v4.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (mapped) {
+      v4 = mapped[1];
+    } else {
+      const hexMapped = v4.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+      if (!hexMapped) return false;
+      const hi = parseInt(hexMapped[1], 16);
+      const lo = parseInt(hexMapped[2], 16);
+      v4 = `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+    }
+  }
+  const m = v4.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
+}
+
+async function assertPublicDns(raw: string): Promise<void> {
+  const host = new URL(raw).hostname.replace(/^\[|\]$/g, "");
+  // literal IPs were already validated by assertPublicUrl
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":")) return;
+  let addrs: string[];
+  try {
+    const res = await dns.lookup(host, { all: true, verbatim: true });
+    addrs = res.map((a) => a.address);
+  } catch {
+    throw new DharaError("Webhook host does not resolve", 400, "ssrf_blocked");
+  }
+  if (!addrs.length || addrs.some((ip) => isPrivateIp(ip))) {
+    throw new DharaError("Webhook host resolves to an internal address", 400, "ssrf_blocked");
+  }
+}
+
 async function deliverOnce(
   hook: WebhookRow,
   event: string,
@@ -154,6 +214,9 @@ async function deliverOnce(
   try {
     try {
       assertPublicUrl(hook.URL);
+      // M12: hostname check alone is not enough — resolve DNS and validate
+      // every returned address before connecting (re-checked per delivery)
+      await assertPublicDns(hook.URL);
     } catch (e) {
       return { status: 0, ok: false, error: e instanceof Error ? e.message : "blocked", ms: Date.now() - start };
     }

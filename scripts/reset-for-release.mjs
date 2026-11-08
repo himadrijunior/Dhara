@@ -15,7 +15,7 @@ const KEEP_EMAIL = "admin@example.com"; // ← change me before running
 const cfg = JSON.parse(await fs.readFile(path.join(process.cwd(), ".dhara/config.json"), "utf8"));
 const pool = await oracledb.createPool({
   user: cfg.oracle.user, password: cfg.oracle.password, connectString: cfg.oracle.connectString,
-  walletLocation: cfg.oracle.walletDir, walletPassword: cfg.oracle.walletPassword, poolMin: 1, poolMax: 3,
+  walletLocation: cfg.oracle.walletDir, configDir: cfg.oracle.walletDir, walletPassword: cfg.oracle.walletPassword, poolMin: 1, poolMax: 3,
 });
 
 const conn = await pool.getConnection();

@@ -187,12 +187,14 @@ When you're ready to deploy (Docker Compose, an Oracle Cloud Always Free VM, Cad
 | 4 | [Architecture](docs/04-architecture.md) | How Dhara maps onto Oracle internals |
 | 5 | [Self-Hosting](docs/05-self-hosting.md) | Docker, OCI VM, systemd, backups, upgrades |
 | 6 | [Security](docs/06-security.md) | Threat model, key storage, RLS guarantees, hardening |
-| 7 | [Security Audit](docs/07-security-audit.md) | v1.1.0 full audit + v1.1.1 addendum: findings fixed, 57-check pentest suite |
+| 7 | [Security Audit](docs/07-security-audit.md) | v1.1.0 full audit + v1.1.1/v1.2.0/v1.2.2 addenda: findings fixed, 82-check pentest suite |
+| 8 | [Email](docs/08-email.md) | Providers (Resend/SMTP/OCI Email Delivery), forgot-password flow, SPF/DKIM/DMARC guide |
 
 # 🕘 Changelog
 
 | Version | What changed |
 |---|---|
+| **v1.2.2** | Full external-audit + re-audit sweep (R1–R8, H5–H7, M12–M14) + **Email feature**: 3-provider mail system (console/Resend/SMTP incl. OCI Email Delivery), password reset & email verification & invites, security alerts, HttpOnly-cookie sessions (no more tokens in localStorage), 15-min access tokens + silent refresh, session-family reuse detection, invite-only signup default, forged-header zip-bomb fix, host-header poisoning fix, JWT secret boot gate, realtime service locked to loopback, DNS-level SSRF guard, CI + 62 unit tests — **82/82 pentest** |
 | **v1.2.1** | SEO & AEO: dynamic host-aware `robots.txt` (`/api/` disallowed, AI answer-engine crawlers welcomed), per-instance `sitemap.xml`, OpenGraph/Twitter cards, canonical URL, SoftwareApplication JSON-LD |
 | **v1.2.0** | External-audit fixes: wallet upload now auth-guarded + allowlisted + size-capped (zip-bomb proof), `/api/setup` fail-closed (no more fail-open on DB outage), per-account rate limiting survives `X-Forwarded-For` spoofing, security headers (CSP/HSTS/nosniff), `tsc` build gate on, license unified to Apache-2.0 — **63/63 pentest** |
 | **v1.1.1** | Thin-mode wallet fix (`configDir` → TNS aliases resolve; cold-start connect 878 ms), pentest tooling hardened (process-group kill, credentials read from env/untracked files only), 57/57 re-verified incl. MCP smoke test |
@@ -225,11 +227,14 @@ All instance configuration lives in `.dhara/config.json` (mode `0600`, git-ignor
 - Passwords → bcrypt · API keys & PATs → SHA-256 hashed at rest, shown once
 - 100% bind variables + identifier validation — no string-built SQL
 - RLS deny-by-default for `anon`/`authenticated`; `dh_sec_` bypasses (server-side only!)
-- Webhooks signed `X-Dhara-Signature: sha256=<hmac>` · IP **and** per-account rate limiting
-- Setup surface fail-closed: wallet upload & credential changes require the instance owner
-- Hardening headers: CSP, HSTS, nosniff, frame-deny · `tsc` errors fail the build
-- **63-check attack suite** ships in-repo: `scripts/pentest.py` (tenant isolation, SQLi, SSRF, zip-bomb, rate-limit bypass, MCP abuse — all blocked)
-- Full model: [docs/06-security.md](docs/06-security.md) · audit: [docs/07-security-audit.md](docs/07-security-audit.md) · responsible disclosure: [SECURITY.md](SECURITY.md)
+- Sessions: refresh token in an **HttpOnly cookie** (never localStorage), 15-min access tokens + silent refresh, one-time refresh rotation with **session-family revocation on reuse**, server-side `sid` revocation check
+- Setup surface fail-closed + **first-run setup token** (auto-generated, printed once, consumed after owner signup)
+- Signup policy per instance: **open / invite / closed** (default invite — no more open first-run takeover window)
+- Webhooks: hostname + **DNS-resolution SSRF guard** (all resolved IPs incl. IPv4-mapped hex forms)
+- Rate limiting: per-account + fail-only IP buckets that survive `X-Forwarded-For` spoofing; `refresh`/OAuth endpoints covered
+- Hardening headers: CSP, HSTS, nosniff, frame-deny · `tsc` errors fail the build · JWT secret missing = boot error (no fallback secret)
+- **82-check attack suite** ships in-repo: `scripts/pentest.py` (tenant isolation, SQLi, SSRF, forged-header zip bomb, rate-limit bypass, cookie flags, session reuse, enumeration-safe forgot — all blocked) + **62 vitest unit tests** in CI
+- Full model: [docs/06-security.md](docs/06-security.md) · audit: [docs/07-security-audit.md](docs/07-security-audit.md) · email: [docs/08-email.md](docs/08-email.md) · responsible disclosure: [SECURITY.md](SECURITY.md)
 
 # ❓ FAQ
 

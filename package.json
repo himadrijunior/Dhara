@@ -1,6 +1,6 @@
 {
   "name": "dhara",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Open-source, self-hostable Backend-as-a-Service (Supabase × Firebase hybrid) that runs entirely on your free Oracle Autonomous AI Database — Auth, auto tables, RLS policies, realtime, webhooks, storage, SQL console, Data API v1, MCP server and an AI-organized dashboard.",
   "license": "Apache-2.0",
   "repository": {
@@ -31,6 +31,7 @@
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "NODE_ENV=production node .next/standalone/server.js",
     "lint": "eslint .",
+    "test": "vitest run",
     "docker:build": "docker build -t dhara .",
     "docker:run": "docker compose up -d"
   },
@@ -65,6 +66,7 @@
     "@radix-ui/react-toggle": "^1.0.3",
     "@radix-ui/react-toggle-group": "^1.1.10",
     "@radix-ui/react-tooltip": "^1.2.7",
+    "@types/nodemailer": "^8.0.2",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -78,6 +80,7 @@
     "lucide-react": "^0.525.0",
     "next": "^16.1.1",
     "next-themes": "^0.4.6",
+    "nodemailer": "^10.4.0",
     "oracledb": "^26.0.0",
     "react": "^19.0.0",
     "react-day-picker": "^9.8.0",
@@ -105,6 +108,7 @@
     "eslint-config-next": "^16.1.1",
     "tailwindcss": "^4",
     "tw-animate-css": "^1.3.5",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^5.1.0"
   }
 }

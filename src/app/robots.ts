@@ -1,13 +1,17 @@
 import type { MetadataRoute } from "next";
 import { getPublicOrigin } from "@/lib/server/publicOrigin";
 
-// SEO/AEO (v1.2.1): dynamic, host-aware robots.txt served per instance.
-// - Public pages ("/") are open to search engines and AI answer engines.
-// - The entire /api/ surface (auth, data API, MCP, setup, wallet) stays out
-//   of every crawler: it holds no content worth indexing and must not leak
-//   endpoint URLs into search caches.
-// - The sitemap URL is absolute and derived from the request host, so it is
-//   correct on any self-hosted domain without configuration.
+// SEO/AEO (v1.2.2): dynamic, host-aware robots.txt served per instance.
+//
+// AEO default (report finding): a self-hosted instance is a PRIVATE admin
+// console — indexing it only puts a login page in search results. So the
+// default is "do not crawl at all". Set DHARA_PUBLIC_SITE=1 on an instance
+// you want search & answer engines to read; then "/" is open (search bots +
+// AI crawlers) and /api/ stays closed.
+//
+// security (R4): the origin comes from DHARA_PUBLIC_URL / trusted proxy only.
+
+const PUBLIC_SITE = process.env.DHARA_PUBLIC_SITE === "1";
 
 const SEARCH_BOTS = [
   "Googlebot",
@@ -17,8 +21,8 @@ const SEARCH_BOTS = [
   "Applebot",
 ];
 
-// Answer-engine crawlers (AEO): AI systems are welcome to read the public
-// surface so Dhara can be cited and quoted, but never the API surface.
+// Answer-engine crawlers (AEO): AI systems may read the public surface so
+// Dhara can be cited and quoted — never the API surface.
 const AI_BOTS = [
   "GPTBot",
   "OAI-SearchBot",
@@ -33,16 +37,19 @@ const AI_BOTS = [
   "CCBot",
 ];
 
-const RULES: MetadataRoute.Robots["rules"] = [
-  { userAgent: "*", allow: "/", disallow: ["/api/"] },
-  { userAgent: SEARCH_BOTS, allow: "/", disallow: ["/api/"] },
-  { userAgent: AI_BOTS, allow: "/", disallow: ["/api/"] },
-];
-
 export default async function robots(): Promise<MetadataRoute.Robots> {
+  if (!PUBLIC_SITE) {
+    return {
+      rules: [{ userAgent: "*", disallow: "/" }],
+    };
+  }
   const base = await getPublicOrigin();
   return {
-    rules: RULES,
+    rules: [
+      { userAgent: "*", allow: "/", disallow: ["/api/"] },
+      { userAgent: SEARCH_BOTS, allow: "/", disallow: ["/api/"] },
+      { userAgent: AI_BOTS, allow: "/", disallow: ["/api/"] },
+    ],
     sitemap: `${base}/sitemap.xml`,
   };
 }

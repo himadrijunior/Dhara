@@ -41,15 +41,19 @@ function sp(req: NextRequest) {
 }
 
 /**
- * Security (CWE-639): PATs are user-scoped tokens — they may only touch
- * projects owned by their user (platform admins excepted). Without this a
- * PAT holder could reach every project on the instance by ID.
+ * Security (CWE-639, H5): both PATs AND platform session JWTs are user-scoped
+ * identities — they may only reach projects owned by their user (platform
+ * admins excepted). Previously a plain member's dashboard JWT could drive the
+ * v1 data API of ANY project on the instance by ID.
  */
-async function patProjectAllowed(ctx: AuthCtx, projectId: string): Promise<boolean> {
-  if (ctx.kind !== "pat") return true;
-  const proj = await getProject(projectId);
-  if (!proj) return false;
-  return ["owner", "admin"].includes(ctx.user?.ROLE ?? "") || proj.OWNER_ID === ctx.user?.ID;
+async function v1ProjectAllowed(ctx: AuthCtx, projectId: string): Promise<boolean> {
+  if (ctx.kind === "sec") return true; // server key is project-bound at lookup
+  if (ctx.kind === "pat" || ctx.kind === "user") {
+    const proj = await getProject(projectId);
+    if (!proj) return false;
+    return ["owner", "admin"].includes(ctx.user?.ROLE ?? "") || proj.OWNER_ID === ctx.user?.ID;
+  }
+  return true; // pub/anon — RLS decides row access
 }
 
 export async function GET(req: NextRequest, { params }: P) {
@@ -60,7 +64,7 @@ export async function GET(req: NextRequest, { params }: P) {
     rateLimitRequest(req, `v1get:${ctx.kind}:${ctx.projectId ?? "na"}`);
     // security: enforce PAT scopes on the data plane (CWE-285)
     if (ctx.kind === "pat") requireScope(ctx, "db:read");
-    if (!(await patProjectAllowed(ctx, project))) {
+    if (!(await v1ProjectAllowed(ctx, project))) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
     const proj = await getProject(project);
@@ -124,7 +128,7 @@ export async function POST(req: NextRequest, { params }: P) {
       return NextResponse.json({ error: "API key required. Send header: x-api-key" }, { status: 401 });
     }
     if (ctx.kind === "pat") requireScope(ctx, "db:write");
-    if (!(await patProjectAllowed(ctx, project))) {
+    if (!(await v1ProjectAllowed(ctx, project))) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
     const proj = await getProject(project);
@@ -177,7 +181,7 @@ export async function PATCH(req: NextRequest, { params }: P) {
       return NextResponse.json({ error: "API key required." }, { status: 401 });
     }
     if (ctx.kind === "pat") requireScope(ctx, "db:write");
-    if (!(await patProjectAllowed(ctx, project))) {
+    if (!(await v1ProjectAllowed(ctx, project))) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
     const reg = await getRegistry(project, table);
@@ -212,7 +216,7 @@ export async function DELETE(req: NextRequest, { params }: P) {
       return NextResponse.json({ error: "API key required." }, { status: 401 });
     }
     if (ctx.kind === "pat") requireScope(ctx, "db:write");
-    if (!(await patProjectAllowed(ctx, project))) {
+    if (!(await v1ProjectAllowed(ctx, project))) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
     const reg = await getRegistry(project, table);

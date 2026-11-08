@@ -2,9 +2,9 @@ services:
   dhara:
     build: .
     container_name: dhara-db
+    # security (R2): no public port — only Caddy (below) can reach the app.
+    # Remove this mapping entirely if you prefer zero direct exposure.
     ports:
-      # security (C3): bind to loopback — put Caddy/Nginx in front for TLS and
-      # set DHARA_TRUST_PROXY=1 so X-Forwarded-For is honored only from them
       - "127.0.0.1:3000:3000"
     volumes:
       - dhara-config:/app/.dhara
@@ -12,10 +12,16 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      # uncomment when running behind the Caddy/Nginx proxy on the host:
-      # - DHARA_TRUST_PROXY=1
-      # optional first-run hardening: require this token in `x-setup-token`
-      # before the Setup Wizard can configure the instance:
+      # security (R2): the bundled Caddy service overwrites X-Forwarded-For,
+      # so it is safe — and required for per-IP rate limiting — to trust it.
+      - DHARA_TRUST_PROXY=1
+      # Pin the PUBLIC origin (R4/R7): used for robots.txt, sitemap.xml,
+      # OpenGraph/canonical tags and every outbound email action link.
+      # NEVER derived from request headers. Replace with your DNS name:
+      - DHARA_PUBLIC_URL=http://localhost
+      # optional extra hardening: the setup token is ALSO auto-generated into
+      # .dhara/setup-token (printed once in `docker logs dhara-db`) — setting
+      # this pins it to a value you choose:
       # - DHARA_SETUP_TOKEN=change-me
     restart: unless-stopped
     healthcheck:
@@ -25,6 +31,22 @@ services:
       retries: 3
       start_period: 20s
 
+  caddy:
+    image: caddy:2-alpine
+    container_name: dhara-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - dhara
+    restart: unless-stopped
+
 volumes:
   dhara-config:
   dhara-storage:
+  caddy-data:
+  caddy-config:

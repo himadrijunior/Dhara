@@ -1,22 +1,18 @@
-import { timingSafeEqual } from "node:crypto";
 import { DharaError, isConfigured } from "./oracle";
 import { requireUserCtx, requirePlatformAdmin } from "./api";
+import { verifySetupToken } from "./setupToken";
 
 /**
- * Setup-surface guard — CWE-306, fail-closed (security audit finding C2).
+ * Setup-surface guard — CWE-306, fail-closed (security audit findings C2+R3).
  *
- * The old check was wrapped in a try/catch that swallowed non-DharaError
- * exceptions. When Oracle was unreachable, `countUsers()` threw a plain
- * error, the guard vanished, and ANY unauthenticated caller could overwrite
- * the Oracle credentials (proven exploitable on a stopped Always-Free DB).
- *
- * Rules now:
+ * Rules:
  *  - Configured instance  → platform admin required. If the DB is down the
  *    lookup throws and the request is rejected (fail-closed). Recovery path:
- *    `DHARA_SETUP_TOKEN` + HTTP, or edit `.dhara/config.json` on the host.
- *  - First run (unconfigured) → bootstrap allowed so the Setup Wizard works;
- *    if `DHARA_SETUP_TOKEN` is set, the `x-setup-token` header must match
- *    (timing-safe compare).
+ *    edit `.dhara/config.json` on the host, or set DHARA_SETUP_TOKEN.
+ *  - First run (unconfigured) → bootstrap requires the setup token (R3):
+ *    either the pinned `DHARA_SETUP_TOKEN` env or the auto-generated
+ *    `.dhara/setup-token` file (printed once to the server log on boot).
+ *    Without this, anyone reaching a fresh instance could run setup.
  */
 export async function assertSetupAllowed(req: Request): Promise<void> {
   if (await isConfigured()) {
@@ -24,12 +20,12 @@ export async function assertSetupAllowed(req: Request): Promise<void> {
     requirePlatformAdmin(ctx);
     return;
   }
-  const expected = process.env.DHARA_SETUP_TOKEN;
-  if (expected) {
-    const got = Buffer.from(req.headers.get("x-setup-token") ?? "");
-    const want = Buffer.from(expected);
-    if (got.length !== want.length || !timingSafeEqual(got, want)) {
-      throw new DharaError("Setup token required (x-setup-token header)", 401, "setup_token");
-    }
+  const presented = req.headers.get("x-setup-token");
+  if (!(await verifySetupToken(presented))) {
+    throw new DharaError(
+      "Setup token required (x-setup-token header) — see the server log for the first-run token",
+      401,
+      "setup_token"
+    );
   }
 }

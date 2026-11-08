@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { q, ensureConnection } from "@/lib/server/oracle";
 import { handleError, ok, requireUserCtx, audit } from "@/lib/server/api";
 import { randomToken, sha256Hex, uuid, PAT_SCOPES, expandScopes } from "@/lib/server/security";
+import { securityAlertMail, sendMail } from "@/lib/server/mail";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +66,12 @@ export async function POST(req: NextRequest) {
       target: body.name.trim(),
       detail: { mode, scopes },
     });
+    // security alert (WS3 C5): PAT creation is a sensitive event — notify async
+    sendMail(
+      securityAlertMail(ctx.user!.EMAIL, [
+        `A new personal access token "${body.name.trim().slice(0, 60)}" (scope: ${mode}) was created from your dashboard.`,
+      ])
+    );
     return NextResponse.json({
       ok: true,
       id,

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useStore } from "@/lib/store";
-import { api, track } from "@/lib/client-api";
+import { api, clearAuth, track } from "@/lib/client-api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +10,25 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
-import { Settings2, Sparkles, Plug, AlertTriangle, RefreshCw } from "lucide-react";
+import { Settings2, Sparkles, Plug, AlertTriangle, RefreshCw, Mail, Send, KeyRound, Users } from "lucide-react";
+
+/** Redacted admin config (GET /api/setup — platform admin only, config === null otherwise). */
+interface AdminConfig {
+  mail: {
+    provider: "console" | "resend" | "smtp";
+    from?: string;
+    hasResendKey: boolean;
+    hasSmtpCreds: boolean;
+    smtpHost?: string;
+    smtpPort?: number;
+    smtpSecure?: boolean;
+    smtpUser?: string;
+  } | null;
+  settings: { signup: "open" | "invite" | "closed" };
+}
+
+type MailProvider = "console" | "resend" | "smtp";
+type SignupMode = "open" | "invite" | "closed";
 
 export default function SettingsView() {
   const store = useStore();
@@ -24,10 +42,32 @@ export default function SettingsView() {
   const [driver, setDriver] = useState<"local" | "oci">("local");
   const project = store.projects.find((p) => p.ID === store.activeProjectId);
 
+  // email delivery (WS3) + signup policy — admin-only (config is null otherwise)
+  const [adminConfig, setAdminConfig] = useState<AdminConfig | null>(null);
+  const [mailProvider, setMailProvider] = useState<MailProvider>("console");
+  const [mailFrom, setMailFrom] = useState("");
+  const [resendKey, setResendKey] = useState("");
+  const [hasResendKey, setHasResendKey] = useState(false);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("587");
+  const [smtpSecure, setSmtpSecure] = useState(false);
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");
+  const [hasSmtpCreds, setHasSmtpCreds] = useState(false);
+  const [testTo, setTestTo] = useState("");
+  const [mailBusy, setMailBusy] = useState(false);
+  const [signupMode, setSignupMode] = useState<SignupMode>("invite");
+
+  // change password
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+
   useEffect(() => {
     track("settings.view");
-    api<{ config: { storage?: { driver?: string; oci?: Record<string, string | boolean | null> } | null } | null }>("/api/setup")
+    api<{ config: (AdminConfig & { storage?: { driver?: string; oci?: Record<string, string | boolean | null> } | null }) | null }>("/api/setup")
       .then((d) => {
+        setAdminConfig(d.config);
         const s = d.config?.storage;
         if (s?.driver) setDriver(s.driver as "local" | "oci");
         const oci = s?.oci as Record<string, string> | null;
@@ -38,6 +78,18 @@ export default function SettingsView() {
           setOciNamespace(oci.namespace ?? "");
           setOciBucket(oci.bucket ?? "");
         }
+        const mail = d.config?.mail;
+        if (mail) {
+          setMailProvider(mail.provider ?? "console");
+          setMailFrom(mail.from ?? "");
+          setHasResendKey(!!mail.hasResendKey);
+          setHasSmtpCreds(!!mail.hasSmtpCreds);
+          setSmtpHost(mail.smtpHost ?? "");
+          setSmtpPort(String(mail.smtpPort ?? 587));
+          setSmtpSecure(!!mail.smtpSecure);
+          setSmtpUser(mail.smtpUser ?? "");
+        }
+        if (d.config?.settings?.signup) setSignupMode(d.config.settings.signup);
       })
       .catch(() => undefined);
   }, []);
@@ -49,7 +101,7 @@ export default function SettingsView() {
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-soft"><Settings2 className="h-4 w-4 text-brand" /></span> Settings
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Instance preferences — AI experience, storage drivers, and project options.
+          Instance preferences — AI experience, email delivery, signup policy, storage drivers, and project options.
         </p>
       </div>
 
@@ -99,6 +151,210 @@ export default function SettingsView() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* Email delivery (WS3) — admin only */}
+      {adminConfig && (
+        <Card className="panel border-border shadow-none">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <span className="flex h-6 w-6 items-center justify-center rounded-md bg-brand-soft"><Mail className="h-3.5 w-3.5 text-brand" /></span> Email delivery
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Transactional email (verification, password reset, invites). Add SPF + DKIM + DMARC records for
+              your domain — see <code className="font-mono text-brand">docs/08-email.md</code>. Free tiers:
+              Resend 3,000/mo · OCI Email Delivery 1,000/day (SMTP).
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(["console", "resend", "smtp"] as const).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setMailProvider(p)}
+                  className={`press rounded-lg border px-4 py-2 text-sm transition-colors ${
+                    mailProvider === p ? "border-brand/40 bg-brand-soft text-brand" : "border-border text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                  }`}
+                >
+                  {p === "console" ? "Console (log only)" : p === "resend" ? "Resend API" : "SMTP"}
+                </button>
+              ))}
+            </div>
+            <div>
+              <Label className="text-xs">From</Label>
+              <Input
+                value={mailFrom}
+                onChange={(e) => setMailFrom(e.target.value)}
+                placeholder="Dhara <no-reply@yourdomain.com>"
+                className="h-10 border-border bg-secondary/50 text-xs"
+              />
+            </div>
+            {mailProvider === "resend" && (
+              <div>
+                <Label className="text-xs">Resend API key</Label>
+                <Input
+                  type="password"
+                  value={resendKey}
+                  onChange={(e) => setResendKey(e.target.value)}
+                  placeholder={hasResendKey ? "[stored]" : "re_…"}
+                  autoComplete="off"
+                  className="h-10 border-border bg-secondary/50 text-xs"
+                />
+              </div>
+            )}
+            {mailProvider === "smtp" && (
+              <>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label className="text-xs">SMTP host</Label>
+                    <Input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} placeholder="smtp.email.us-ashburn-1.oci.oraclecloud.com" className="h-10 border-border bg-secondary/50 text-xs" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Port</Label>
+                    <Input value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} inputMode="numeric" placeholder="587" className="h-10 border-border bg-secondary/50 text-xs" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">SMTP user</Label>
+                    <Input value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} placeholder="ocid1.user.oc1..…/youruser@tenancy" className="h-10 border-border bg-secondary/50 text-xs" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">SMTP password</Label>
+                    <Input
+                      type="password"
+                      value={smtpPass}
+                      onChange={(e) => setSmtpPass(e.target.value)}
+                      placeholder={hasSmtpCreds ? "[stored]" : "SMTP auth password"}
+                      autoComplete="new-password"
+                      className="h-10 border-border bg-secondary/50 text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium">Use TLS/SSL (implicit, port 465)</p>
+                    <p className="text-xs text-muted-foreground">Off = STARTTLS upgrade on a plain connection (587).</p>
+                  </div>
+                  <Switch checked={smtpSecure} onCheckedChange={setSmtpSecure} />
+                </div>
+              </>
+            )}
+            <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+              <Button
+                size="sm"
+                disabled={mailBusy}
+                className="press bg-gradient-to-r from-[#14B8A6] to-[#0d9488] font-medium text-zinc-950 shadow-[0_0_16px_-4px_rgba(20,184,166,0.5)] hover:from-[#2DD4BF] hover:to-[#14B8A6]"
+                onClick={async () => {
+                  setMailBusy(true);
+                  try {
+                    const d = await api<{ ok: boolean; config: AdminConfig | null }>("/api/setup", {
+                      method: "PATCH",
+                      body: JSON.stringify({
+                        mail: {
+                          provider: mailProvider,
+                          from: mailFrom || undefined,
+                          ...(mailProvider === "resend" && resendKey ? { resendApiKey: resendKey } : {}),
+                          ...(mailProvider === "smtp"
+                            ? {
+                                smtp: {
+                                  host: smtpHost,
+                                  port: Number(smtpPort) || 587,
+                                  secure: smtpSecure,
+                                  user: smtpUser || undefined,
+                                  ...(smtpPass ? { pass: smtpPass } : {}),
+                                },
+                              }
+                            : {}),
+                        },
+                      }),
+                    });
+                    setHasResendKey(!!d.config?.mail?.hasResendKey);
+                    setHasSmtpCreds(!!d.config?.mail?.hasSmtpCreds);
+                    setResendKey("");
+                    setSmtpPass("");
+                    toast.success("Email settings saved");
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Failed");
+                  } finally {
+                    setMailBusy(false);
+                  }
+                }}
+              >
+                Save email settings
+              </Button>
+              <Input
+                value={testTo}
+                onChange={(e) => setTestTo(e.target.value)}
+                placeholder="you@example.com"
+                className="h-9 w-44 border-border bg-secondary/50 text-xs"
+                aria-label="Test email recipient"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={mailBusy || !testTo}
+                className="press gap-1.5 border-border bg-secondary/50 hover:bg-accent/60"
+                onClick={async () => {
+                  try {
+                    await api("/api/setup/mail/test", { method: "POST", body: JSON.stringify({ to: testTo }) });
+                    toast.success(`Test email sent to ${testTo}`);
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "Test email failed");
+                  }
+                }}
+              >
+                <Send className="h-3.5 w-3.5" /> Send test email
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Signup policy — admin only */}
+      {adminConfig && (
+        <Card className="panel border-border shadow-none">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <span className="flex h-6 w-6 items-center justify-center rounded-md bg-brand-soft"><Users className="h-3.5 w-3.5 text-brand" /></span> Signup policy
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {(["open", "invite", "closed"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setSignupMode(m)}
+                  className={`press rounded-lg border px-4 py-2 text-sm capitalize transition-colors ${
+                    signupMode === m ? "border-brand/40 bg-brand-soft text-brand" : "border-border text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {signupMode === "open"
+                ? "Open — anyone can register on the landing page."
+                : signupMode === "invite"
+                  ? "Invite — only users with an emailed invite token can register."
+                  : "Closed — no new signups; existing users only."}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="press border-border bg-secondary/50 hover:bg-accent/60"
+              onClick={async () => {
+                try {
+                  await api("/api/setup", { method: "PATCH", body: JSON.stringify({ settings: { signup: signupMode } }) });
+                  toast.success(`Signup policy set to ${signupMode}`);
+                } catch (e) {
+                  toast.error(e instanceof Error ? e.message : "Failed");
+                }
+              }}
+            >
+              Save signup policy
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Storage driver */}
       <Card className="panel border-border shadow-none">
@@ -175,6 +431,70 @@ export default function SettingsView() {
               Use local driver
             </Button>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Change password (local accounts) */}
+      <Card className="panel border-border shadow-none">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-brand-soft"><KeyRound className="h-3.5 w-3.5 text-brand" /></span> Change password
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label className="text-xs">Current password</Label>
+              <Input
+                type="password"
+                value={currentPw}
+                onChange={(e) => setCurrentPw(e.target.value)}
+                autoComplete="current-password"
+                className="h-10 border-border bg-secondary/50 text-xs"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">New password <span className="text-muted-foreground">(min 12 chars)</span></Label>
+              <Input
+                type="password"
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                autoComplete="new-password"
+                className="h-10 border-border bg-secondary/50 text-xs"
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pwBusy || !currentPw || newPw.length < 12}
+              className="press border-border bg-secondary/50 hover:bg-accent/60"
+              onClick={async () => {
+                setPwBusy(true);
+                try {
+                  await api("/api/auth/change-password", {
+                    method: "POST",
+                    body: JSON.stringify({ currentPassword: currentPw, newPassword: newPw }),
+                  });
+                  toast.success("Password changed — sign in again");
+                  clearAuth();
+                  store.setUser(null);
+                  window.location.reload();
+                } catch (e) {
+                  // Google-only accounts have no password to change — the server explains
+                  toast.error(e instanceof Error ? e.message : "Failed");
+                } finally {
+                  setPwBusy(false);
+                }
+              }}
+            >
+              Update password
+            </Button>
+            <p className="text-[11px] text-muted-foreground">
+              Changing your password signs out every session. Google-only accounts have no password to change.
+            </p>
+          </div>
         </CardContent>
       </Card>
 

@@ -5,10 +5,16 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 
-// SEO/AEO (v1.2.1): absolute-URL base for OpenGraph/Twitter/canonical tags.
-// Self-hosters can override with NEXT_PUBLIC_SITE_URL; the tag-level URLs
-// below stay relative and are resolved against this base.
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+// SEO/AEO (v1.2.2): absolute-URL base for OpenGraph/Twitter/canonical tags.
+// security (R4/R7): prefer the operator-pinned DHARA_PUBLIC_URL — request
+// headers are never trusted here. Fallback: NEXT_PUBLIC_SITE_URL, then localhost.
+const SITE_URL =
+  process.env.DHARA_PUBLIC_URL ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+
+// AEO: self-hosted admin consoles are private by default — do not let search
+// engines index them (they show a login page). Set DHARA_PUBLIC_SITE=1 on a
+// public marketing instance to allow indexing.
+const PUBLIC_SITE = process.env.DHARA_PUBLIC_SITE === "1";
 
 const SEO_TITLE =
   "Dhara — Supabase + Firebase power on your free Oracle AI DB";
@@ -61,7 +67,7 @@ export const metadata: Metadata = {
     statusBarStyle: "black-translucent",
   },
   alternates: { canonical: "/" },
-  robots: { index: true, follow: true },
+  robots: PUBLIC_SITE ? { index: true, follow: true } : { index: false, follow: false },
   openGraph: {
     type: "website",
     siteName: "Dhara",

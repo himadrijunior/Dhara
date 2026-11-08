@@ -1,0 +1,18 @@
+# Dhara — Caddy config for docker-compose (container-network).
+#
+# security (H4): no `?XTransformPort=` forwarding. security (R2): the proxy
+# overwrites X-Forwarded-For with the real client address, which is why the
+# compose file sets DHARA_TRUST_PROXY=1 — spoofed headers from clients are
+# always replaced before the app sees them.
+#
+# Replace `:80` with your DNS name (e.g. dhara.example.com) to get automatic
+# HTTPS; then set DHARA_PUBLIC_URL=https://dhara.example.com in docker-compose.
+
+:80 {
+	reverse_proxy dhara:3000 {
+		header_up Host {host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+}

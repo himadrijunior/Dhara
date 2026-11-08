@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { q, DharaError } from "./oracle";
 import {
   uuid,
@@ -120,14 +121,15 @@ export async function signup(email: string, password: string, name?: string): Pr
 export async function createSession(
   userId: string,
   userAgent?: string,
-  ip?: string
+  ip?: string,
+  familyId?: string | null
 ): Promise<{ sessionId: string; refreshToken: string }> {
   const sessionId = uuid();
   const refreshToken = randomHex(48);
   const expires = new Date(Date.now() + 30 * 24 * 3600 * 1000);
   await q(
-    `INSERT INTO DHARA_SESSIONS (ID, USER_ID, REFRESH_HASH, USER_AGENT, IP, EXPIRES_AT)
-     VALUES (:id, :usr, :rh, :ua, :ip, :exp)`,
+    `INSERT INTO DHARA_SESSIONS (ID, USER_ID, REFRESH_HASH, USER_AGENT, IP, EXPIRES_AT, FAMILY_ID)
+     VALUES (:id, :usr, :rh, :ua, :ip, :exp, :fam)`,
     {
       id: sessionId,
       usr: userId,
@@ -135,6 +137,7 @@ export async function createSession(
       ua: (userAgent ?? "unknown").slice(0, 380),
       ip: ip ?? null,
       exp: expires,
+      fam: familyId ?? sessionId,
     }
   );
   return { sessionId, refreshToken };
@@ -145,9 +148,12 @@ export async function issueTokens(
   sessionId: string,
   refreshToken: string
 ): Promise<TokenPair> {
+  // security (M13): short-lived access tokens (15 min). The dashboard holds
+  // the refresh token in an HttpOnly cookie and silently refreshes, so the
+  // stolen-access-token window shrinks from 24 h to minutes.
   const accessToken = await signJwt(
     { sub: user.ID, email: user.EMAIL, name: user.NAME ?? undefined, role: user.ROLE, sid: sessionId },
-    60 * 60 * 24
+    60 * 15
   );
   return { accessToken, refreshToken, user: toPublicUser(user) };
 }
@@ -167,23 +173,43 @@ export async function login(
   return issueTokens(user, sessionId, refreshToken);
 }
 
-/** Rotate refresh token (one-time use). */
+/**
+ * Rotate refresh token (one-time use) with reuse detection (M13):
+ * a refresh token that was ALREADY rotated is presented again → the whole
+ * session family is revoked (stolen-token containment).
+ */
 export async function refreshSession(
   refreshToken: string,
   userAgent?: string,
   ip?: string
 ): Promise<TokenPair> {
-  const r = await q(`SELECT * FROM DHARA_SESSIONS WHERE REFRESH_HASH = :rh AND REVOKED = 0`, {
+  const r = await q(`SELECT * FROM DHARA_SESSIONS WHERE REFRESH_HASH = :rh`, {
     rh: sha256Hex(refreshToken),
   });
-  const session = r.rows[0] as { ID: string; USER_ID: string; EXPIRES_AT?: string } | undefined;
+  const session = r.rows[0] as
+    | { ID: string; USER_ID: string; EXPIRES_AT?: string; REVOKED?: number; FAMILY_ID?: string | null }
+    | undefined;
   if (!session) throw new DharaError("Session expired. Please sign in again.", 401, "session_invalid");
+  if (Number(session.REVOKED ?? 0) === 1) {
+    // REUSE of an already-rotated token — treat as theft, kill the family.
+    await q(
+      `UPDATE DHARA_SESSIONS SET REVOKED = 1
+       WHERE USER_ID = :u AND (FAMILY_ID = :fam OR ID = :sid)`,
+      { u: session.USER_ID, fam: session.FAMILY_ID ?? session.ID, sid: session.ID }
+    );
+    throw new DharaError("Session expired. Please sign in again.", 401, "session_reused");
+  }
   const exp = session.EXPIRES_AT ? new Date(session.EXPIRES_AT).getTime() : 0;
   if (Date.now() > exp) throw new DharaError("Session expired. Please sign in again.", 401, "session_expired");
   await q(`UPDATE DHARA_SESSIONS SET REVOKED = 1 WHERE ID = :id`, { id: session.ID });
   const user = await getUserById(session.USER_ID);
   if (!user) throw new DharaError("User not found", 401, "user_missing");
-  const { sessionId, refreshToken: newRefresh } = await createSession(user.ID, userAgent, ip);
+  const { sessionId, refreshToken: newRefresh } = await createSession(
+    user.ID,
+    userAgent,
+    ip,
+    session.FAMILY_ID ?? session.ID
+  );
   return issueTokens(user, sessionId, newRefresh);
 }
 
@@ -194,6 +220,11 @@ export async function logout(refreshToken?: string): Promise<void> {
   });
 }
 
+/** Revoke every session of a user (password reset / security response). */
+export async function revokeAllSessions(userId: string): Promise<void> {
+  await q(`UPDATE DHARA_SESSIONS SET REVOKED = 1 WHERE USER_ID = :u AND REVOKED = 0`, { u: userId });
+}
+
 /** Resolve the platform user from an Authorization: Bearer <access JWT>. */
 export async function userFromRequest(req: Request): Promise<PlatformUser | null> {
   const auth = req.headers.get("authorization") ?? "";
@@ -201,6 +232,9 @@ export async function userFromRequest(req: Request): Promise<PlatformUser | null
   if (!token || token.startsWith("ikl_")) return null;
   const claims = await verifyJwt(token);
   if (!claims) return null;
+  // security (M13): revoked sessions must not work even on this secondary path
+  const { isSessionActive } = await import("./api");
+  if (!(await isSessionActive(claims.sid))) return null;
   return getUserById(claims.sub);
 }
 
@@ -277,6 +311,12 @@ export async function upsertOAuthUser(
   provider: string,
   profile: GoogleProfile
 ): Promise<PlatformUser> {
+  // security (H6): OAuth sign-in/auto-link is only allowed for Google-VERIFIED
+  // emails — otherwise an attacker controlling an unverified address could
+  // take over a same-address local account. Callers must have checked this.
+  if (profile.email_verified !== true) {
+    throw new DharaError("Google account email is not verified", 401, "email_unverified");
+  }
   const link = await q(
     `SELECT USER_ID FROM DHARA_OAUTH_ACCOUNTS WHERE PROVIDER = :p AND PROVIDER_UID = :pid`,
     { p: provider, pid: profile.sub }
@@ -315,4 +355,31 @@ export async function upsertOAuthUser(
     { id: uuid(), usr: user.ID, p: provider, pid: profile.sub, profile: JSON.stringify(profile) }
   );
   return user;
+}
+
+/* ---------------------- ONE-TIME OAUTH LOGIN CODES (H7) -------------------- */
+
+/**
+ * Tokens are never placed in the URL fragment (H7): the callback hands the SPA
+ * a single-use 60-second code, exchanged over POST for the real tokens.
+ */
+export async function createOAuthCode(userId: string): Promise<string> {
+  const code = crypto.randomBytes(32).toString("base64url");
+  await q(
+    `INSERT INTO DHARA_OAUTH_CODES (ID, USER_ID, CODE_HASH, EXPIRES_AT)
+     VALUES (:id, :u, :h, SYSTIMESTAMP + NUMTODSINTERVAL(60, 'second'))`,
+    { id: uuid(), u: userId, h: sha256Hex(code) }
+  );
+  return code;
+}
+
+export async function consumeOAuthCode(code: string): Promise<string | null> {
+  const r = await q(`SELECT ID, USER_ID, EXPIRES_AT, USED_AT FROM DHARA_OAUTH_CODES WHERE CODE_HASH = :h`, {
+    h: sha256Hex(code),
+  });
+  const row = r.rows[0] as { ID: string; USER_ID: string; EXPIRES_AT?: string; USED_AT?: string } | undefined;
+  if (!row || row.USED_AT) return null;
+  if (row.EXPIRES_AT && new Date(row.EXPIRES_AT).getTime() < Date.now()) return null;
+  await q(`UPDATE DHARA_OAUTH_CODES SET USED_AT = SYSTIMESTAMP WHERE ID = :id`, { id: row.ID });
+  return row.USER_ID;
 }

@@ -5,7 +5,7 @@ import {
   closePool,
   checkConnection,
 } from "@/lib/server/oracle";
-import { readConfig, writeConfig, redactConfig, deleteConfig } from "@/lib/server/config";
+import { readConfig, writeConfig, redactConfig, deleteConfig, type MailConfig } from "@/lib/server/config";
 import { handleError, ok, requireUserCtx, requirePlatformAdmin } from "@/lib/server/api";
 import { assertSetupAllowed } from "@/lib/server/setupGuard";
 import { countUsers } from "@/lib/server/auth";
@@ -106,6 +106,60 @@ export async function DELETE(req: NextRequest) {
     await closePool();
     await deleteConfig();
     return NextResponse.json({ ok: true });
+  } catch (e) {
+    return handleError(e);
+  }
+}
+
+/**
+ * PATCH — instance settings + email provider config (admin-only).
+ * Body: { settings?: { signup: "open"|"invite"|"closed" }, mail?: MailConfig }.
+ * Mail secrets are stored in .dhara/config.json (0600) and always redacted in
+ * GET responses — they are never echoed back to any client.
+ */
+export async function PATCH(req: NextRequest) {
+  try {
+    const ctx = await requireUserCtx(req);
+    requirePlatformAdmin(ctx);
+    const body = (await req.json()) as {
+      settings?: { signup?: "open" | "invite" | "closed" };
+      mail?: Partial<MailConfig>;
+    };
+    const patch: {
+      settings?: { signup?: "open" | "invite" | "closed" };
+      mail?: MailConfig;
+    } = {};
+    if (body.settings) {
+      const mode = body.settings.signup;
+      if (mode && !["open", "invite", "closed"].includes(mode)) {
+        return ok({ ok: false, error: "signup must be open | invite | closed" }, { status: 400 });
+      }
+      patch.settings = { signup: mode };
+    }
+    if (body.mail) {
+      const existing = (await readConfig())?.mail;
+      const provider = body.mail.provider ?? existing?.provider ?? "console";
+      if (!["console", "resend", "smtp"].includes(provider)) {
+        return ok({ ok: false, error: "unknown mail provider" }, { status: 400 });
+      }
+      patch.mail = {
+        provider,
+        from: body.mail.from ?? existing?.from,
+        resendApiKey: body.mail.resendApiKey ?? existing?.resendApiKey,
+        smtp: {
+          host: body.mail.smtp?.host ?? existing?.smtp?.host ?? "",
+          port: body.mail.smtp?.port ?? existing?.smtp?.port ?? 587,
+          secure: body.mail.smtp?.secure ?? existing?.smtp?.secure,
+          user: body.mail.smtp?.user ?? existing?.smtp?.user,
+          pass: body.mail.smtp?.pass ?? existing?.smtp?.pass,
+        },
+      };
+    }
+    if (!patch.settings && !patch.mail) {
+      return ok({ ok: false, error: "nothing to update" }, { status: 400 });
+    }
+    await writeConfig(patch);
+    return NextResponse.json({ ok: true, config: redactConfig(await readConfig()) });
   } catch (e) {
     return handleError(e);
   }

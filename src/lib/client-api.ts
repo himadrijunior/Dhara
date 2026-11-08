@@ -2,27 +2,39 @@
 
 import { useStore } from "./store";
 
-/** Dhara — client API helper with token refresh + usage tracking. */
+/**
+ * Dhara — client API helper (H7, M13).
+ *
+ * The refresh token never touches localStorage: it lives in an HttpOnly cookie
+ * scoped to /api/auth. The access token is held in module memory only (dies
+ * with the tab). Silent refresh runs on 401 and on a 14-minute timer so the
+ * 15-minute access TTL is invisible to the user.
+ */
 
-const LS_ACCESS = "ikl_access";
-const LS_REFRESH = "ikl_refresh";
+let accessToken: string | null = null;
+
+const LEGACY_KEYS = ["ikl_access", "ikl_refresh"];
+
+function purgeLegacy(): void {
+  if (typeof window === "undefined") return;
+  for (const k of LEGACY_KEYS) window.localStorage.removeItem(k);
+}
+purgeLegacy();
 
 export function getTokens() {
-  if (typeof window === "undefined") return { access: null, refresh: null };
-  return {
-    access: localStorage.getItem(LS_ACCESS),
-    refresh: localStorage.getItem(LS_REFRESH),
-  };
+  // refresh is cookie-held now; only the in-memory access token exists here
+  return { access: accessToken, refresh: null };
 }
 
-export function setTokens(access: string | null, refresh?: string | null) {
-  if (typeof window === "undefined") return;
-  if (access) localStorage.setItem(LS_ACCESS, access);
-  if (refresh) localStorage.setItem(LS_REFRESH, refresh);
-  if (access === null) {
-    localStorage.removeItem(LS_ACCESS);
-    localStorage.removeItem(LS_REFRESH);
-  }
+/** Store the access token in memory. `null` signs the client out. */
+export function setTokens(access: string | null): void {
+  accessToken = access;
+  if (!access) purgeLegacy();
+}
+
+export function clearAuth(): void {
+  accessToken = null;
+  purgeLegacy();
 }
 
 let refreshing: Promise<boolean> | null = null;
@@ -30,17 +42,16 @@ let refreshing: Promise<boolean> | null = null;
 async function tryRefresh(): Promise<boolean> {
   if (!refreshing) {
     refreshing = (async () => {
-      const { refresh } = getTokens();
-      if (!refresh) return false;
       try {
+        // cookie carries the refresh token (HttpOnly) — no body needed
         const res = await fetch("/api/auth/refresh", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ refreshToken: refresh }),
+          body: JSON.stringify({}),
         });
         if (!res.ok) return false;
         const data = await res.json();
-        setTokens(data.accessToken, data.refreshToken);
+        accessToken = data.accessToken;
         useStore.getState().setUser(data.user);
         return true;
       } catch {
@@ -53,29 +64,32 @@ async function tryRefresh(): Promise<boolean> {
   return refreshing;
 }
 
+// M13: access TTL is 15 min — refresh proactively every 14 min while alive
+if (typeof window !== "undefined") {
+  setInterval(() => {
+    if (accessToken) void tryRefresh();
+  }, 14 * 60_000).unref?.();
+}
+
 export async function api<T = unknown>(
   path: string,
   opts: RequestInit & { skipAuth?: boolean } = {}
 ): Promise<T> {
-  const { access } = getTokens();
-  const headers = new Headers(opts.headers);
-  if (access && !opts.skipAuth) headers.set("authorization", `Bearer ${access}`);
-  if (opts.body && !headers.has("content-type") && !(opts.body instanceof FormData)) {
-    headers.set("content-type", "application/json");
-  }
-  let res = await fetch(path, { ...opts, headers });
+  const buildHeaders = (): Headers => {
+    const headers = new Headers(opts.headers);
+    if (accessToken && !opts.skipAuth) headers.set("authorization", `Bearer ${accessToken}`);
+    if (opts.body && !headers.has("content-type") && !(opts.body instanceof FormData)) {
+      headers.set("content-type", "application/json");
+    }
+    return headers;
+  };
+  let res = await fetch(path, { ...opts, headers: buildHeaders() });
   if (res.status === 401 && !opts.skipAuth) {
     const okRefresh = await tryRefresh();
     if (okRefresh) {
-      const retryHeaders = new Headers(opts.headers);
-      const { access: a2 } = getTokens();
-      if (a2) retryHeaders.set("authorization", `Bearer ${a2}`);
-      if (opts.body && !retryHeaders.has("content-type") && !(opts.body instanceof FormData)) {
-        retryHeaders.set("content-type", "application/json");
-      }
-      res = await fetch(path, { ...opts, headers: retryHeaders });
+      res = await fetch(path, { ...opts, headers: buildHeaders() });
     } else {
-      setTokens(null);
+      clearAuth();
       useStore.getState().setUser(null);
     }
   }

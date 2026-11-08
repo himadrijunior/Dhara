@@ -2,6 +2,40 @@
 
 All notable changes to Dhara.
 
+## [1.2.2] — 2026-11-08
+
+### Re-audit sweep (R1–R8, H5–H7, M12–M14) + Email feature
+
+**Security fixes (all verified by the 82-check pentest suite):**
+
+- **R1 — forged-header zip bomb (Medium)**: wallet entries are now read through a stream cap (`readCapped`) that counts actual decompressed bytes and aborts mid-stream — the attacker-controlled `uncompressedSize` header can no longer bypass the size check. Oversized `Content-Length` requests are rejected before buffering.
+- **R2 — shared rate-limit bucket login DoS (Medium)**: IP buckets now count **failed logins only**; the `"local"` fallback bucket gets a raised ceiling (per-account limiter stays primary); `docker-compose.yml` ships Caddy + `DHARA_TRUST_PROXY=1` active by default; boot warning when the proxy is unconfigured.
+- **R3 — first-run takeover window (Medium)**: a **setup token** is auto-generated into `.dhara/setup-token` (0600, printed once to the log, Jupyter-style) and required for setup, wallet upload and the first owner signup; consumed once an owner exists.
+- **R4 — Host header poisoning (Medium)**: `getPublicOrigin()` now derives the public origin from `DHARA_PUBLIC_URL` only; forwarded headers are honored solely when `DHARA_TRUST_PROXY=1`. Email action links share the same source (no reset-link poisoning).
+- **R5 — rate limits + IP hygiene (Low)**: `refresh` and OAuth endpoints gained rate limits; sessions store sanitized IPs.
+- **R6/R7 (Low)**: metadata URLs come from `DHARA_PUBLIC_URL` (no more localhost canonical/OG in prod); self-hosted consoles are **noindex by default** (`DHARA_PUBLIC_SITE=1` to opt in).
+- **R8 — JWT secret (Low)**: missing JWT secret is a hard boot error — the hardcoded dev fallback secret is gone.
+- **H5 — cross-project access (High)**: platform session JWTs are now ownership-checked on the v1 data API (members can only touch their own projects); new **signup policy** (`open | invite | closed`, default **invite**) with single-use email invites.
+- **H6 — OAuth (High)**: `crypto.randomBytes` state in an HttpOnly cookie (was `Math.random()`, no cookie, timing-safe compare at callback); Google accounts must be `email_verified`.
+- **H7 — token storage (High)**: refresh token moved to an **HttpOnly SameSite=Strict cookie** scoped to `/api/auth`; access token lives in memory; OAuth hands the SPA a **single-use 60-second code** instead of URL-fragment tokens; silent 14-minute refresh.
+- **M12 — webhook SSRF (Medium)**: DNS is resolved and **every** address validated before delivery — including IPv4-mapped hex forms (`::ffff:7f00:1`) that WHATWG URL canonicalization previously slipped past the checks.
+- **M13 — session revocation (Medium)**: access JWT TTL cut 24 h → **15 min**; every bearer path checks the `sid` against live sessions (60 s cache); refresh tokens rotate one-time with **family-wide revocation on reuse**.
+- **M14 — realtime service (Medium)**: internal admin server binds `127.0.0.1` only; Socket.IO CORS pinned to `DHARA_PUBLIC_URL`; empty internal secret fails boot.
+
+**New feature — Email (forgot password & more):**
+
+- `src/lib/server/mail.ts` — three drivers: `console` (dev), `resend` (HTTPS API), `smtp` (nodemailer → OCI Email Delivery / Brevo / SES / Gmail / custom). Queued in `DHARA_MAIL_QUEUE`, 3 retries with backoff, never blocks API responses.
+- Settings → **Email tab**: provider, From, credentials (redacted `hasKey:true`), **Send test email**, SPF/DKIM/DMARC guidance (`docs/08-email.md` incl. the zero-cost OCI Email Delivery recipe).
+- **Password reset flow**: `POST /api/auth/forgot` (enumeration-proof, per-IP + per-mailbox 3/h limits) → SHA-256-hashed single-use 30-min token → `POST /api/auth/reset` (12+ chars, revokes all sessions, notice mail). Google-only accounts get a "sign in with Google" mail.
+- **Email verification** on signup, **invite emails**, and **security alerts** (new-device sign-in, password change, PAT creation).
+- Change-password endpoint + UI (verifies current password, revokes sessions).
+
+**Engineering:**
+
+- `.github/workflows/ci.yml` — tsc, eslint, vitest (62 unit tests: RLS compiler, filter parser, SSRF guard incl. hex-mapped IPv4, storage path), `npm audit --omit=dev`.
+- ESLint clean across the repo; MCP smoke (8 tools) part of the harness.
+- Pentest suite extended 63 → **82 checks** — 82/82 passing against the live instance.
+
 ## [1.2.1] — 2026-11-08
 
 ### SEO & AEO: crawl surface & structured data

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useStore } from "@/lib/store";
 import { api, getTokens, setTokens, track } from "@/lib/client-api";
-import Landing from "@/components/dhara/landing";
+import Landing, { type LandingRoute } from "@/components/dhara/landing";
 import { Shell } from "@/components/dhara/shell";
 import Dashboard from "@/components/dhara/dashboard";
 import TablesView from "@/components/dhara/tables";
@@ -24,6 +24,9 @@ import { DharaLoader } from "@/components/dhara/brand";
 export default function Home() {
   const store = useStore();
   const [loading, setLoading] = useState(true);
+  // Email-action / OAuth deep links (#/reset, #/verify, #/signup, #/oauth) —
+  // captured once below BEFORE the hash-sync effect rewrites the URL.
+  const [route, setRoute] = useState<LandingRoute | null>(null);
 
   const boot = useCallback(async () => {
     setLoading(true);
@@ -64,6 +67,41 @@ export default function Home() {
      
   }, []);
 
+  // Deep links: #/oauth?code=… (H7 code exchange), #/reset?token=…, #/verify?token=…,
+  // #/signup?invite=…&email=…. The one-time code / tokens are stripped from the URL
+  // immediately after being read (security) — handling itself lives in Landing.
+  // Declared FIRST so it runs before the hash-sync effect below.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash;
+    if (!hash.startsWith("#/")) return;
+    const [path, query = ""] = hash.slice(2).split("?");
+    const params = new URLSearchParams(query);
+    const keep = (fragment: string) =>
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${fragment}`);
+
+    if (path === "oauth") {
+      const code = params.get("code");
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      if (code) setRoute({ kind: "oauth", code });
+    } else if (path === "reset") {
+      const token = params.get("token");
+      keep("/reset");
+      if (token) setRoute({ kind: "reset", token });
+    } else if (path === "verify") {
+      const token = params.get("token");
+      keep("/verify");
+      if (token) setRoute({ kind: "verify", token });
+    } else if (path === "signup") {
+      const invite = params.get("invite");
+      const email = params.get("email");
+      if (invite || email) {
+        setRoute({ kind: "signup", invite: invite ?? "", email: email ?? "" });
+        keep("/signup");
+      }
+    }
+  }, []);
+
   // load projects when user present
   useEffect(() => {
     if (!store.user) return;
@@ -84,23 +122,6 @@ export default function Home() {
       .catch(() => undefined);
      
   }, [store.user]);
-
-  // OAuth callback (#/oauth?access_token=…&refresh_token=…)
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const hash = window.location.hash;
-    if (hash.startsWith("#/oauth")) {
-      const params = new URLSearchParams(hash.split("?")[1] ?? "");
-      const access = params.get("access_token");
-      const refresh = params.get("refresh_token");
-      if (access && refresh) {
-        setTokens(access, refresh);
-        window.location.hash = "";
-        void boot();
-      }
-    }
-     
-  }, []);
 
   // hash router sync (#/tables, #/table/x, #/sql …)
   useEffect(() => {
@@ -138,6 +159,7 @@ export default function Home() {
         onDone={() => {
           void boot();
         }}
+        initialRoute={route}
       />
     );
   }

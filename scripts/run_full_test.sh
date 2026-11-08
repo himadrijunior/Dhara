@@ -26,6 +26,18 @@ for i in $(seq 1 60); do
 done
 if [ "$READY" != "1" ]; then echo "== SERVER FAILED TO START =="; tail -20 /tmp/dhara-dev.log; exit 2; fi
 
+echo "== MCP SMOKE (before pentest — pentest's last section poisons the rate-limit bucket) =="
+OWTOK=$(curl -s -X POST http://127.0.0.1:3000/api/auth/login \
+  -H 'content-type: application/json' \
+  -d "{\"email\":\"$DHARA_OWNER_EMAIL\",\"password\":\"$DHARA_OWNER_PW\"}" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('accessToken',''))")
+TOOLCOUNT=$(curl -s -X POST http://127.0.0.1:3000/api/mcp \
+  -H "Authorization: Bearer $OWTOK" -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('result',{}).get('tools',[])))" 2>/dev/null || echo 0)
+echo "mcp tools/list -> $TOOLCOUNT tools"
+if [ "$TOOLCOUNT" -lt 1 ]; then echo "== MCP SMOKE FAILED =="; EXIT=2; kill -- -$SERVER_PID 2>/dev/null; exit 2; fi
+
 echo "== FULL SELF-HACK PENTEST =="
 python3 scripts/pentest.py
 EXIT=$?

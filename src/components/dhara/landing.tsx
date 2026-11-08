@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,8 @@ import {
   KeyRound,
   Boxes,
   CircleCheck,
+  CircleX,
+  Mail,
   Upload,
   ArrowRight,
   Terminal,
@@ -26,7 +28,7 @@ import {
   Table2,
 } from "lucide-react";
 import { api, setTokens } from "@/lib/client-api";
-import { useStore } from "@/lib/store";
+import { useStore, type SessionUser } from "@/lib/store";
 import { DharaLogo, DharaLoader, DharaLayerPath } from "@/components/dhara/brand";
 
 /**
@@ -40,6 +42,162 @@ interface SetupResponse {
   ok: boolean;
   banner?: string;
   error?: string;
+}
+
+/** Email-action / OAuth deep links captured by page.tsx before the hash-sync effect. */
+export type LandingRoute =
+  | { kind: "oauth"; code: string }
+  | { kind: "reset"; token: string }
+  | { kind: "verify"; token: string }
+  | { kind: "signup"; invite: string; email: string };
+
+type AuthTab = "connect" | "signup" | "login";
+type SignupModeState = "open" | "invite" | "closed" | null;
+
+/* Shared button styles (used by the wizard tabs and the reset/verify cards) */
+const primaryBtn =
+  "press h-11 w-full bg-primary text-[14px] font-semibold text-primary-foreground hover:bg-primary-hover";
+const ghostBtn =
+  "h-11 w-full border-border bg-card text-[14px] font-medium text-foreground hover:bg-accent";
+
+const GENERIC_RESET_MSG =
+  "If that email is registered, a password-reset link has been sent. Check your inbox (and spam folder).";
+
+/* ── #/reset — set a new password (token already stripped from the URL) ── */
+function ResetPasswordCard({ token, onDone }: { token: string; onDone: () => void }) {
+  const [pw, setPw] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (pw.length < 12) return toast.error("Password must be at least 12 characters");
+    if (pw !== confirm) return toast.error("Passwords do not match");
+    setBusy(true);
+    try {
+      const data = await api<{ ok: boolean; message?: string }>("/api/auth/reset", {
+        method: "POST",
+        body: JSON.stringify({ token, newPassword: pw }),
+        skipAuth: true,
+      });
+      toast.success(data.message ?? "Password updated — sign in with your new password.");
+      onDone();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Password reset failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1">
+        <p className="flex items-center gap-2 text-sm font-semibold">
+          <KeyRound className="h-4 w-4 text-brand" /> Set a new password
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Reset link accepted. Choose a strong password — 12+ characters. All other sessions will be signed out.
+        </p>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="rp-new" className="text-xs font-medium text-muted-foreground">New password</Label>
+        <Input
+          id="rp-new"
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          placeholder="••••••••••••"
+          autoComplete="new-password"
+          className="h-10"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="rp-confirm" className="text-xs font-medium text-muted-foreground">Confirm new password</Label>
+        <Input
+          id="rp-confirm"
+          type="password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          placeholder="••••••••••••"
+          autoComplete="new-password"
+          className="h-10"
+        />
+      </div>
+      <Button onClick={submit} disabled={busy || !pw || !confirm} className={primaryBtn}>
+        {busy ? <DharaLoader size={18} className="mr-2 text-primary-foreground" label="Updating" /> : null}
+        {busy ? "Updating…" : "Update password"}
+      </Button>
+      <button
+        type="button"
+        onClick={onDone}
+        className="text-[11px] text-muted-foreground transition-colors hover:text-brand"
+      >
+        ← Back to sign in
+      </button>
+    </div>
+  );
+}
+
+/* ── #/verify — confirm an email address (token already stripped from the URL) ── */
+function VerifyEmailCard({ token, onDone }: { token: string; onDone: () => void }) {
+  const [state, setState] = useState<"pending" | "ok" | "error">("pending");
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    api<{ ok: boolean; message?: string }>("/api/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+      skipAuth: true,
+    })
+      .then((d) => {
+        if (!alive) return;
+        setState("ok");
+        setMessage(d.message ?? "Email verified. Thank you!");
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setState("error");
+        setMessage(e instanceof Error ? e.message : "Invalid or expired verification link");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [token]);
+
+  return (
+    <div className="space-y-4">
+      {state === "pending" && (
+        <div className="flex flex-col items-center gap-3 py-8">
+          <DharaLoader size={36} className="text-foreground" label="Verifying email" />
+          <p className="text-xs text-muted-foreground">Verifying your email…</p>
+        </div>
+      )}
+      {state === "ok" && (
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 rounded-lg border border-[#22C55E]/30 bg-[#22C55E]/10 p-4">
+            <CircleCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#22C55E]" />
+            <div>
+              <p className="text-sm font-medium">Email verified</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{message}</p>
+            </div>
+          </div>
+          <Button onClick={onDone} className={primaryBtn}>Sign in</Button>
+        </div>
+      )}
+      {state === "error" && (
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 rounded-lg border border-danger/30 bg-danger/10 p-4">
+            <CircleX className="mt-0.5 h-5 w-5 shrink-0 text-danger" />
+            <div>
+              <p className="text-sm font-medium">Verification failed</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{message}</p>
+            </div>
+          </div>
+          <Button onClick={onDone} className={ghostBtn}>Back to sign in</Button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* Feature sections — colored top rule instead of boxes (per brand spec) */
@@ -101,7 +259,13 @@ function MockTableWindow() {
   );
 }
 
-export default function Landing({ onDone }: { onDone: () => void }) {
+export default function Landing({
+  onDone,
+  initialRoute = null,
+}: {
+  onDone: () => void;
+  initialRoute?: LandingRoute | null;
+}) {
   const setBoot = useStore((s) => s.setBoot);
   const [mode, setMode] = useState<"tls" | "wallet">("tls");
   const [user, setUser] = useState("");
@@ -118,6 +282,25 @@ export default function Landing({ onDone }: { onDone: () => void }) {
   const [authPassword, setAuthPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const hasUsers = useStore((s) => s.hasUsers);
+  const connected = useStore((s) => s.connected);
+  const [tab, setTab] = useState<AuthTab>(() => (connected || !hasUsers ? "connect" : "login"));
+
+  // signup policy (GET /api/auth/signup — public)
+  const [signupMode, setSignupMode] = useState<SignupModeState>(null);
+  const [ownerExists, setOwnerExists] = useState(true);
+  const [inviteToken, setInviteToken] = useState("");
+  const [setupToken, setSetupToken] = useState("");
+  const [inviteHint, setInviteHint] = useState(false);
+
+  // forgot password (inline card under the login form)
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotMsg, setForgotMsg] = useState<string | null>(null);
+  const [forgotBusy, setForgotBusy] = useState(false);
+
+  // email-action deep links (#/reset, #/verify — token stripped from the URL by page.tsx)
+  const [hashRoute, setHashRoute] = useState<Extract<LandingRoute, { kind: "reset" | "verify" }> | null>(null);
+  const routeHandled = useRef(false);
 
   async function uploadWallet() {
     if (!walletFile) return toast.error("Choose your wallet zip first");
@@ -157,17 +340,30 @@ export default function Landing({ onDone }: { onDone: () => void }) {
 
   async function doSignup() {
     setAuthBusy(true);
+    setInviteHint(false);
     try {
-      const data = await api<{ ok: boolean; accessToken: string; refreshToken: string; user: never }>(
+      const data = await api<{ ok: boolean; accessToken: string; user: SessionUser }>(
         "/api/auth/signup",
-        { method: "POST", body: JSON.stringify({ name, email, password: authPassword }) }
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name,
+            email,
+            password: authPassword,
+            ...(inviteToken ? { inviteToken } : {}),
+            ...(setupToken ? { setupToken } : {}),
+          }),
+        }
       );
-      setTokens(data.accessToken, data.refreshToken);
+      setTokens(data.accessToken);
       useStore.getState().setUser(data.user);
       toast.success("Welcome to Dhara 🎉");
       onDone();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Signup failed");
+      const msg = e instanceof Error ? e.message : "Signup failed";
+      // server error code `invite_required` → surface a friendly hint on the token field
+      if (/invite/i.test(msg)) setInviteHint(true);
+      toast.error(msg);
     } finally {
       setAuthBusy(false);
     }
@@ -176,11 +372,11 @@ export default function Landing({ onDone }: { onDone: () => void }) {
   async function doLogin() {
     setAuthBusy(true);
     try {
-      const data = await api<{ ok: boolean; accessToken: string; refreshToken: string; user: never }>(
+      const data = await api<{ ok: boolean; accessToken: string; user: SessionUser }>(
         "/api/auth/login",
         { method: "POST", body: JSON.stringify({ email, password: authPassword }) }
       );
-      setTokens(data.accessToken, data.refreshToken);
+      setTokens(data.accessToken);
       useStore.getState().setUser(data.user);
       toast.success("Signed in");
       onDone();
@@ -191,7 +387,76 @@ export default function Landing({ onDone }: { onDone: () => void }) {
     }
   }
 
-  const connected = useStore((s) => s.connected);
+  async function doForgot() {
+    if (!forgotEmail) return toast.error("Enter your account email first");
+    setForgotBusy(true);
+    try {
+      const data = await api<{ ok: boolean; message?: string }>("/api/auth/forgot", {
+        method: "POST",
+        body: JSON.stringify({ email: forgotEmail }),
+        skipAuth: true,
+      });
+      // enumeration-proof: the same generic answer for existing and unknown emails
+      setForgotMsg(data.message ?? GENERIC_RESET_MSG);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Request failed");
+    } finally {
+      setForgotBusy(false);
+    }
+  }
+
+  // Public signup policy → render the Owner tab accordingly (open / invite / closed / owner boot)
+  useEffect(() => {
+    api<{ mode: "open" | "invite" | "closed"; ownerExists: boolean }>("/api/auth/signup", {
+      skipAuth: true,
+    })
+      .then((d) => {
+        setSignupMode(d.mode);
+        setOwnerExists(d.ownerExists);
+      })
+      .catch(() => setSignupMode("open"));
+  }, []);
+
+  // Deep links passed down from page.tsx (parsed + sanitized before the hash-sync effect).
+  // One-time OAuth codes must be exchanged exactly once — guarded by ref.
+  useEffect(() => {
+    if (routeHandled.current || !initialRoute) return;
+    routeHandled.current = true;
+
+    if (initialRoute.kind === "oauth") {
+      void (async () => {
+        try {
+          const data = await api<{ ok: boolean; accessToken: string; user: SessionUser }>(
+            "/api/auth/oauth/google/exchange",
+            { method: "POST", body: JSON.stringify({ code: initialRoute.code }), skipAuth: true }
+          );
+          setTokens(data.accessToken);
+          useStore.getState().setUser(data.user);
+          toast.success("Signed in with Google");
+          onDone();
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "Google sign-in failed");
+        }
+      })();
+      return;
+    }
+
+    if (initialRoute.kind === "reset") {
+      setHashRoute({ kind: "reset", token: initialRoute.token });
+      return;
+    }
+
+    if (initialRoute.kind === "verify") {
+      setHashRoute({ kind: "verify", token: initialRoute.token });
+      return;
+    }
+
+    if (initialRoute.kind === "signup") {
+      if (initialRoute.invite) setInviteToken(initialRoute.invite);
+      if (initialRoute.email) setEmail(initialRoute.email);
+      setTab("signup");
+    }
+  }, [initialRoute, onDone]);
 
   /* ONE animation: logo layers cascade on page load (Framer Motion). */
   const layerMotion = (i: number) => ({
@@ -199,11 +464,6 @@ export default function Landing({ onDone }: { onDone: () => void }) {
     animate: { opacity: 1, y: 0 },
     transition: { delay: 0.12 + i * 0.13, duration: 0.55, ease: [0.16, 1, 0.3, 1] as const },
   });
-
-  const primaryBtn =
-    "press h-11 w-full bg-primary text-[14px] font-semibold text-primary-foreground hover:bg-primary-hover";
-  const ghostBtn =
-    "h-11 w-full border-border bg-card text-[14px] font-medium text-foreground hover:bg-accent";
 
   return (
     <div className="relative min-h-screen overflow-x-clip bg-background text-foreground">
@@ -326,7 +586,27 @@ export default function Landing({ onDone }: { onDone: () => void }) {
         {/* ── Setup / Auth panel ── */}
         <div id="dhara-setup" className="flex items-start justify-center pt-2 lg:sticky lg:top-8 lg:pt-14">
           <div className="panel w-full max-w-md p-6 sm:p-7">
-            <Tabs defaultValue={connected || !hasUsers ? "connect" : "login"}>
+            {hashRoute?.kind === "reset" ? (
+              <ResetPasswordCard
+                token={hashRoute.token}
+                onDone={() => {
+                  setHashRoute(null);
+                  setTab("login");
+                }}
+              />
+            ) : hashRoute?.kind === "verify" ? (
+              <VerifyEmailCard
+                token={hashRoute.token}
+                onDone={() => {
+                  setHashRoute(null);
+                  setTab("login");
+                }}
+              />
+            ) : (
+            <Tabs
+              value={tab}
+              onValueChange={(v) => setTab(v as AuthTab)}
+            >
               <TabsList className="mb-6 grid h-11 w-full grid-cols-3 rounded-lg border border-border bg-secondary/60 p-1">
                 <TabsTrigger
                   value="connect"
@@ -505,6 +785,18 @@ export default function Landing({ onDone }: { onDone: () => void }) {
 
               {/* SIGNUP TAB */}
               <TabsContent value="signup" className="mt-1 space-y-4">
+                {signupMode === "closed" ? (
+                  <div className="rounded-lg border border-border bg-secondary/40 p-4">
+                    <p className="flex items-center gap-2 text-sm font-medium">
+                      <Lock className="h-4 w-4 text-muted-foreground" /> Signup is disabled on this instance
+                    </p>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      The owner has turned off new registrations. Ask an admin to send you an invitation
+                      when the policy changes.
+                    </p>
+                  </div>
+                ) : (
+                  <>
                 <div className="space-y-1.5">
                   <Label htmlFor="su-name" className="text-xs font-medium text-muted-foreground">Name</Label>
                   <Input id="su-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" className="h-10" />
@@ -517,17 +809,57 @@ export default function Landing({ onDone }: { onDone: () => void }) {
                   <Label htmlFor="su-pass" className="text-xs font-medium text-muted-foreground">
                     Password <span className="font-normal text-muted-foreground/60">(min 8 chars)</span>
                   </Label>
-                  <Input id="su-pass" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} className="h-10" />
+                  <Input id="su-pass" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} autoComplete="new-password" className="h-10" />
                 </div>
+                {ownerExists === false && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="su-setup" className="text-xs font-medium text-muted-foreground">Setup token</Label>
+                    <Input
+                      id="su-setup"
+                      value={setupToken}
+                      onChange={(e) => setSetupToken(e.target.value)}
+                      placeholder="paste the first-run token"
+                      className="h-10 font-mono text-xs"
+                    />
+                    <p className="text-[11px] leading-relaxed text-muted-foreground">
+                      First-run token — printed once in the server log (docker logs / server console) and
+                      saved in <code className="font-mono text-brand">.dhara/setup-token</code>.
+                    </p>
+                  </div>
+                )}
+                {ownerExists && signupMode === "invite" && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="su-invite" className="text-xs font-medium text-muted-foreground">Invitation token</Label>
+                    <Input
+                      id="su-invite"
+                      value={inviteToken}
+                      onChange={(e) => setInviteToken(e.target.value)}
+                      placeholder="paste the token from your invite email"
+                      className="h-10 font-mono text-xs"
+                    />
+                    {inviteHint && (
+                      <p className="text-[11px] leading-relaxed text-warning">
+                        This instance is invite-only — ask an admin for an invitation, then paste the token
+                        from the email link here.
+                      </p>
+                    )}
+                  </div>
+                )}
                 <Button onClick={doSignup} disabled={authBusy || !connected} className={primaryBtn}>
                   {authBusy ? <DharaLoader size={18} className="mr-2 text-primary-foreground" label="Creating account" /> : null}
                   {hasUsers ? "Create member account" : "Create owner account"}
                 </Button>
                 <p className="text-[11px] text-muted-foreground">
                   {connected
-                    ? "The first account becomes the platform owner."
+                    ? ownerExists === false
+                      ? "The first account becomes the platform owner."
+                      : signupMode === "invite"
+                        ? "Signups need a valid invitation token."
+                        : "Signup is open — anyone can create an account."
                     : "Connect Oracle first (tab 1)."}
                 </p>
+                  </>
+                )}
               </TabsContent>
 
               {/* LOGIN TAB */}
@@ -538,8 +870,51 @@ export default function Landing({ onDone }: { onDone: () => void }) {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="li-pass" className="text-xs font-medium text-muted-foreground">Password</Label>
-                  <Input id="li-pass" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} className="h-10" />
+                  <Input id="li-pass" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} autoComplete="current-password" className="h-10" />
                 </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForgotOpen((v) => !v);
+                      setForgotMsg(null);
+                    }}
+                    className="text-[11px] text-muted-foreground underline-offset-2 transition-colors hover:text-brand hover:underline"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+                {forgotOpen && (
+                  <div className="space-y-2 rounded-lg border border-border bg-secondary/40 p-3">
+                    <Label htmlFor="li-forgot" className="text-xs font-medium text-muted-foreground">Account email</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="li-forgot"
+                        type="email"
+                        value={forgotEmail}
+                        onChange={(e) => setForgotEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="h-9 flex-1 text-xs"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={doForgot}
+                        disabled={forgotBusy || !forgotEmail}
+                        className="h-9 shrink-0 gap-1.5 text-xs"
+                      >
+                        {forgotBusy ? (
+                          <DharaLoader size={14} label="Sending" />
+                        ) : (
+                          <Mail className="h-3.5 w-3.5" />
+                        )}
+                        Send link
+                      </Button>
+                    </div>
+                    {forgotMsg && <p className="text-[11px] leading-relaxed text-brand">{forgotMsg}</p>}
+                  </div>
+                )}
                 <Button onClick={doLogin} disabled={authBusy || !connected} className={primaryBtn}>
                   {authBusy ? <DharaLoader size={18} className="mr-2 text-primary-foreground" label="Signing in" /> : null}
                   Sign in
@@ -571,6 +946,7 @@ export default function Landing({ onDone }: { onDone: () => void }) {
                 </p>
               </TabsContent>
             </Tabs>
+            )}
           </div>
         </div>
       </div>

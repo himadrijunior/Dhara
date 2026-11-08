@@ -37,7 +37,17 @@ export interface DharaConfig {
   internalSecret: string;
   oauth?: { google?: { clientId?: string; clientSecret?: string } };
   storage?: { driver: "local" | "oci"; oci?: OciStorageConfig };
+  mail?: MailConfig;
+  /** Instance-level switches (H5): signup open|invite|closed — default invite. */
+  settings?: { signup?: "open" | "invite" | "closed" };
   connectedAt?: string;
+}
+
+export interface MailConfig {
+  provider: "console" | "resend" | "smtp";
+  from?: string;
+  resendApiKey?: string;
+  smtp?: { host: string; port: number; secure?: boolean; user?: string; pass?: string };
 }
 
 export async function ensureDirs(): Promise<void> {
@@ -68,6 +78,8 @@ export async function writeConfig(patch: Partial<DharaConfig>): Promise<DharaCon
       driver: patch.storage?.driver ?? existing.storage?.driver ?? "local",
       oci: { ...(existing.storage?.oci ?? {}), ...(patch.storage?.oci ?? {}) },
     },
+    mail: { ...(existing.mail ?? {}), ...(patch.mail ?? {}) } as MailConfig,
+    settings: { ...(existing.settings ?? {}), ...(patch.settings ?? {}) },
     connectedAt: patch.connectedAt ?? existing.connectedAt,
   };
   await fs.writeFile(CONFIG_FILE, JSON.stringify(merged, null, 2), { mode: 0o600 });
@@ -112,6 +124,19 @@ export function redactConfig(cfg: DharaConfig | null) {
           }
         : null,
     },
+    mail: cfg.mail
+      ? {
+          provider: cfg.mail.provider,
+          from: cfg.mail.from,
+          hasResendKey: !!cfg.mail.resendApiKey,
+          hasSmtpCreds: !!(cfg.mail.smtp?.user && cfg.mail.smtp?.pass),
+          smtpHost: cfg.mail.smtp?.host,
+          smtpPort: cfg.mail.smtp?.port,
+          smtpSecure: cfg.mail.smtp?.secure,
+          smtpUser: cfg.mail.smtp?.user,
+        }
+      : null,
+    settings: { signup: cfg.settings?.signup ?? "invite" },
   };
 }
 

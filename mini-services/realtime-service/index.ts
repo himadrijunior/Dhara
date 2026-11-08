@@ -9,6 +9,13 @@ import { Server } from "socket.io";
  * - Port 3004: internal admin HTTP (POST /emit with secret, GET /health)
  * - Clients authenticate with any valid Dhara token (JWT / API key / PAT)
  *   via handshake auth; verification is delegated to the main app.
+ *
+ * security (M14):
+ *  - the admin server binds 127.0.0.1 ONLY (was: all interfaces → any LAN
+ *    peer could POST /emit and forge realtime change events);
+ *  - Socket.IO CORS is pinned to the configured public origin instead of `*`;
+ *  - boot fails when the internal secret is empty (an empty secret disabled
+ *    the whole /emit auth check).
  */
 
 const PORT = 3003;
@@ -23,6 +30,23 @@ function internalSecret(): string {
     return process.env.IKL_INTERNAL_SECRET ?? "";
   }
 }
+
+// security (M14): refuse to serve events with an empty internal secret.
+if (!internalSecret()) {
+  console.error(
+    "[dhara-realtime] FATAL: internal secret is empty — run the main app's " +
+      "Setup Wizard once (it writes .dhara/config.json) or set IKL_INTERNAL_SECRET."
+  );
+  process.exit(1);
+}
+
+// security (M14): CORS origin pinned to the configured public origin(s).
+const publicOrigin = process.env.DHARA_PUBLIC_URL?.trim().replace(/\/+$/, "") ?? "";
+const allowedOrigins = [
+  ...(publicOrigin ? [publicOrigin] : []),
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+];
 
 async function verifyToken(token: string): Promise<{ ok: boolean; role?: string }> {
   try {
@@ -45,7 +69,13 @@ async function verifyToken(token: string): Promise<{ ok: boolean; role?: string 
 const io = new Server(createServer(), {
   // DO NOT change the path — the gateway forwards "/" to this port
   path: "/",
-  cors: { origin: "*", methods: ["GET", "POST"] },
+  cors: {
+    origin: (origin, cb) => {
+      if (!origin || allowedOrigins.includes(origin.replace(/\/+$/, ""))) cb(null, true);
+      else cb(new Error("origin not allowed"));
+    },
+    methods: ["GET", "POST"],
+  },
   pingTimeout: 60000,
   pingInterval: 25000,
 });
@@ -130,5 +160,6 @@ const admin = createServer((req, res) => {
 });
 
 io.listen(PORT);
-admin.listen(ADMIN_PORT);
-console.log(`[dhara-realtime] socket.io :${PORT} · admin :${ADMIN_PORT}`);
+// security (M14): admin surface is loopback-only
+admin.listen(ADMIN_PORT, "127.0.0.1");
+console.log(`[dhara-realtime] socket.io :${PORT} · admin :${ADMIN_PORT} (127.0.0.1)`);

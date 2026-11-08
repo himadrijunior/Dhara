@@ -12,7 +12,31 @@ import {
   uuid,
 } from "./security";
 
-/** Dhara — API helpers: responses, auth context, scopes, usage, audit. */
+/* ----------------------------- SESSION REVOCATION --------------------------- */
+
+// security (M13): access JWTs are now short-lived (15 min), but a stolen or
+// revoked token must stop working before its TTL. Every bearer-token path
+// checks that the JWT's `sid` still points at a live session. Results are
+// cached for 60 s — revocation propagates within a minute, at no extra DB cost.
+const sidCache = new Map<string, { active: boolean; at: number }>();
+
+export async function isSessionActive(sid?: string): Promise<boolean> {
+  if (!sid) return true; // legacy tokens without sid — do not break them
+  const now = Date.now();
+  const cached = sidCache.get(sid);
+  if (cached && now - cached.at < 60_000) return cached.active;
+  let active = true;
+  try {
+    const r = await q(`SELECT REVOKED FROM DHARA_SESSIONS WHERE ID = :id`, { id: sid });
+    const row = r.rows[0] as { REVOKED?: number } | undefined;
+    active = !!row && Number(row.REVOKED ?? 0) === 0;
+  } catch {
+    active = true; // DB hiccup — fail open rather than lock out every user
+  }
+  if (sidCache.size > 10_000) sidCache.clear();
+  sidCache.set(sid, { active, at: now });
+  return active;
+}
 
 export function ok(data: unknown, init?: ResponseInit) {
   return NextResponse.json(data, init);
@@ -139,6 +163,10 @@ export async function resolveAuthCtx(
     const { verifyJwt } = await import("./security");
     const claims = await verifyJwt(bearer);
     if (claims) {
+      // security (M13): reject tokens whose session was revoked
+      if (!(await isSessionActive(claims.sid))) {
+        throw new DharaError("Session revoked. Please sign in again.", 401, "session_revoked");
+      }
       const user = await getUserById(claims.sub);
       if (user) {
         return {
@@ -201,8 +229,14 @@ export function requireScope(ctx: AuthCtx, scope: PatScope): void {
   }
 }
 
-export function rateLimitRequest(req: Request, bucket: string, limit = 240) {
-  const res = rateLimit(`${bucket}:${clientIp(req)}`, limit);
+export function rateLimitRequest(req: Request, bucket: string, limit = 240, opts?: { localMultiplier?: number }) {
+  const ip = clientIp(req);
+  // security (R2): without DHARA_TRUST_PROXY everyone shares one "local"
+  // bucket. To keep a single attacker from locking out the whole instance we
+  // raise the shared-bucket ceiling (the per-account limiter stays the primary
+  // defense) and — for auth surfaces — count failures only, not successes.
+  const effective = ip === "local" ? Math.round(limit * (opts?.localMultiplier ?? 10)) : limit;
+  const res = rateLimit(`${bucket}:${ip}`, effective);
   if (!res.ok) {
     throw new DharaError(
       `Rate limit exceeded. Retry in ${Math.ceil(res.resetInMs / 1000)}s.`,
@@ -228,6 +262,15 @@ export function clientIp(req: Request): string {
     );
   }
   return "local";
+}
+
+/**
+ * Sanitized IP for storage (R5): cap length and strip control characters so a
+ * spoofed header cannot inject junk into audit rows / session records.
+ */
+export function sanitizeIp(ip: string | null | undefined): string | null {
+  if (!ip) return null;
+  return ip.replace(/[\x00-\x1f\x7f]/g, "").slice(0, 64) || null;
 }
 
 /**
