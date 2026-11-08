@@ -117,11 +117,11 @@ details server-side only.
 
 ## Verification
 
-`scripts/pentest.py` — 57 automated attack/functional checks covering all
+`scripts/pentest.py` — automated attack/functional checks covering all
 findings above (tenant isolation ×15, SQL privilege ×2, PAT scopes ×4,
 takeover ×3, disclosure ×2, SSRF ×5, SQLi ×7, traversal ×2, RLS/bypass ×4,
 auth hygiene ×3, MCP ×4) — **57/57 PASS** on v1.1.0, re-verified **57/57
-PASS** on v1.1.1.
+PASS** on v1.1.1, extended to **63 checks / 63 PASS** on v1.2.0.
 
 Run it against your own instance:
 
@@ -155,3 +155,34 @@ Result: cold-start wallet connection **878 ms → query OK**; full pentest
 suite **57/57 PASS**; MCP smoke test included in the same run
 (`tools/list` = 8 tools; member-PAT `run_sql` and cross-tenant `select`
 both blocked).
+
+## v1.2.0 addendum — external audit round (2026-11-08)
+
+An independent code-reading + live-probe audit (fake wallet, unreachable DB,
+no production credentials) examined the **pre-auth bootstrap surface**, which
+the v1.1.0 suite (authenticated-member attacker model) did not cover. Four
+findings were confirmed at runtime and fixed in this release; the pentest
+suite grew from 57 to 63 checks to keep each of them locked.
+
+| ID | Severity | Finding | Fix |
+| --- | --- | --- | --- |
+| C1 | Critical | `POST /api/setup/wallet` had **no auth at all** — worked on configured instances too; a 306 KB zip bomb wrote **301 MB** to disk (compressed-size check only, extract-into-live-dir) | `assertSetupAllowed` guard + filename allowlist + per-file/total uncompressed caps + staged-then-atomic swap (`wallet_too_big` regression check) |
+| C2 | Critical | `/api/setup` POST guard was **fail-open**: `countUsers()` throwing (DB stopped — routine on Always Free) was swallowed by `catch` and an anonymous caller could overwrite the Oracle credentials | guard moved to fail-closed `src/lib/server/setupGuard.ts` — DB down ⇒ 401/502, never a bypass; optional `DHARA_SETUP_TOKEN` for first-run hardening |
+| C3 | High | Rate limiters trusted client `X-Forwarded-For` — rotating the header fully bypassed brute-force protection (proven: 30/30 logins through) | `clientIp()` honors XFF only with `DHARA_TRUST_PROXY=1`; new **per-account** limiter (5/15 min) keyed by targeted login email; compose binds `127.0.0.1:3000` |
+| M10 | Medium | Unauthenticated `GET /api/setup` leaked `oracle.user`, connect string and OCI storage identifiers | config payload now admin-only; anonymous callers get `{configured, connected, banner, hasUsers}` |
+| M11 | Medium | No CSP / HSTS / nosniff / frame headers at all | baseline headers in `next.config.ts` (CSP incl. `frame-ancestors 'none'`, nosniff, referrer, permissions, HSTS) |
+| H9 | High | `ignoreBuildErrors: true` could let future type errors silently weaken security routes | flipped to `false` — verified `tsc --noEmit` = 0 errors, build stays green |
+| H4 | High | Repo Caddyfile exposed `?XTransformPort=` → arbitrary localhost-port proxy | removed; hardened Caddyfile + production template |
+| L17 | Low | `LICENSE` (Apache-2.0) vs `package.json`/README (MIT) mismatch | unified on Apache-2.0 |
+
+Also acknowledged (from the same audit, **not yet fixed** — tracked for the
+next releases): H5 cross-project design (dashboard users and app end-users
+share `DHARA_USERS`), H6 Google OAuth state/`email_verified`, H7 tokens in
+`localStorage`, M12 SSRF DNS-rebinding hardening, M13 session binding,
+M14 realtime service binds. These are in the roadmap — see README changelog
+and SECURITY.md.
+
+New regression checks (all **PASS**): unauth wallet upload → 401 ·
+unauth setup reconfigure → 401 · `GET /api/setup` anon → config hidden ·
+zip-bomb upload → 400 `wallet_too_big` · CSP+nosniff present ·
+per-account login limit survives XFF rotation (429 at attempt 6).

@@ -1,23 +1,27 @@
+# Dhara — hardened reverse proxy.
+#
+# security (H4): the old dev config exposed `?XTransformPort=<n>` query
+# forwarding, which let anyone reach ARBITRARY localhost ports (realtime
+# admin, DB listeners...) through the public listener. That block is gone.
+#
+# Production: copy this file, replace the site address with your DNS name
+# and run `caddy run` — TLS certificates are issued automatically.
+
 :81 {
-	@transform_port_query {
-		query XTransformPort=*
-	}
-
-	handle @transform_port_query {
-		reverse_proxy localhost:{query.XTransformPort} {
-			header_up Host {host}
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
-			header_up X-Real-IP {remote_host}
-		}
-	}
-
-	handle {
-		reverse_proxy localhost:3000 {
-			header_up Host {host}
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
-			header_up X-Real-IP {remote_host}
-		}
+	reverse_proxy localhost:3000 {
+		header_up Host {host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
 	}
 }
+
+# --- production template (uncomment + edit) -------------------------------
+# dhara.example.com {
+# 	reverse_proxy localhost:3000 {
+# 		header_up Host {host}
+# 		header_up X-Forwarded-For {remote_host}
+# 		header_up X-Forwarded-Proto {scheme}
+# 		header_up X-Real-IP {remote_host}
+# 	}
+# }

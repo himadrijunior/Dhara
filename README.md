@@ -2,13 +2,15 @@
 
 <img src="public/dhara-logo.svg" alt="Dhara logo" width="88" />
 
-# Dhara
+# Dhara — Open-Source Self-Hosted Supabase & Firebase Alternative
 
-**The open-source backend platform that runs entirely on your free Oracle Autonomous AI Database.**
+**The open-source backend-as-a-service (BaaS) that runs entirely on your free Oracle Autonomous AI Database.**
 
-*Supabase's developer experience × Firebase's simplicity — on Oracle's Always Free tier. No demo mode, ever.*
+*Dhara is a self-hostable Supabase × Firebase alternative: Supabase's developer experience, Firebase's simplicity, Oracle's Always Free tier. No demo mode, ever — your data, your server, your database.*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-14B8A6.svg)](LICENSE)
+**What is Dhara?** Dhara is an open-source, self-hosted backend platform — authentication (JWT, Google OAuth, API keys, PATs), auto-generated REST APIs with row-level security, realtime, storage, webhooks, a SQL console and an MCP server for AI agents — that runs on Node.js + Next.js and stores everything in your own Oracle Autonomous AI Database, including the $0 Always Free tier.
+
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-14B8A6.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg)](https://nodejs.org)
 [![Next.js](https://img.shields.io/badge/Next.js-16-black.svg)](https://nextjs.org)
 [![Oracle DB](https://img.shields.io/badge/Oracle%20Autonomous%20AI%20DB-26ai-F80000.svg)](https://www.oracle.com/autonomous-database/)
@@ -191,6 +193,7 @@ When you're ready to deploy (Docker Compose, an Oracle Cloud Always Free VM, Cad
 
 | Version | What changed |
 |---|---|
+| **v1.2.0** | External-audit fixes: wallet upload now auth-guarded + allowlisted + size-capped (zip-bomb proof), `/api/setup` fail-closed (no more fail-open on DB outage), per-account rate limiting survives `X-Forwarded-For` spoofing, security headers (CSP/HSTS/nosniff), `tsc` build gate on, license unified to Apache-2.0 — **63/63 pentest** |
 | **v1.1.1** | Thin-mode wallet fix (`configDir` → TNS aliases resolve; cold-start connect 878 ms), pentest tooling hardened (process-group kill, credentials read from env/untracked files only), 57/57 re-verified incl. MCP smoke test |
 | **v1.1.0** | Security hardening: tenant isolation everywhere, PAT scopes, SSRF guard, SQL privilege gates, rate limiting, audit log — 9 findings fixed, 57/57 pentest |
 | **v1.0.0** | First open-source release: auth, projects, tables, data API v1, storage, webhooks, SQL console, MCP server, PWA |
@@ -221,8 +224,47 @@ All instance configuration lives in `.dhara/config.json` (mode `0600`, git-ignor
 - Passwords → bcrypt · API keys & PATs → SHA-256 hashed at rest, shown once
 - 100% bind variables + identifier validation — no string-built SQL
 - RLS deny-by-default for `anon`/`authenticated`; `dh_sec_` bypasses (server-side only!)
-- Webhooks signed `X-Dhara-Signature: sha256=<hmac>` · rate limiting on public endpoints
-- Full model: [docs/06-security.md](docs/06-security.md)
+- Webhooks signed `X-Dhara-Signature: sha256=<hmac>` · IP **and** per-account rate limiting
+- Setup surface fail-closed: wallet upload & credential changes require the instance owner
+- Hardening headers: CSP, HSTS, nosniff, frame-deny · `tsc` errors fail the build
+- **63-check attack suite** ships in-repo: `scripts/pentest.py` (tenant isolation, SQLi, SSRF, zip-bomb, rate-limit bypass, MCP abuse — all blocked)
+- Full model: [docs/06-security.md](docs/06-security.md) · audit: [docs/07-security-audit.md](docs/07-security-audit.md) · responsible disclosure: [SECURITY.md](SECURITY.md)
+
+# ❓ FAQ
+
+### What is Dhara?
+Dhara is an open-source, self-hosted backend-as-a-service (BaaS). It gives you authentication, databases with auto REST APIs and row-level security, realtime, storage, webhooks and an MCP server — all backed by your own Oracle Autonomous AI Database.
+
+### Is Dhara really free to run?
+Yes. Dhara runs on Oracle's **Always Free** Autonomous AI Database (2 databases, 20 GB, forever free) and is MIT-style free to self-host under Apache-2.0. Your only optional cost is the VM you run it on.
+
+### How is Dhara different from Supabase or Firebase?
+Supabase and Firebase host your data on their cloud. Dhara runs **on your machine or VM** and stores everything in **your own Oracle database** — same kind of developer experience (table editor, policies, auto API), but you own the data, the network path and the cost. See the comparison table below.
+
+### Can I self-host Dhara?
+Yes — `docker compose up` or plain Node 20+. Configuration lives in a local `.dhara/config.json`; nothing phones home.
+
+### Does Dhara work with AI agents?
+Yes — Dhara ships an **MCP server** (HTTP JSON-RPC + stdio bridge) with 8 tools, so Claude, Cursor or any MCP client can query your tables with scoped personal access tokens.
+
+### Is Dhara production-ready?
+It ships with deny-by-default RLS, 100% bind variables, hashed keys, fail-closed setup, rate limiting, hardening headers and a 63-check automated attack suite (`scripts/pentest.py`) that passes 63/63. Review [docs/07-security-audit.md](docs/07-security-audit.md) and the [open roadmap](#-contributing) before internet-exposing an instance.
+
+# 🆚 Dhara vs Supabase vs Firebase
+
+| | **Dhara** | Supabase | Firebase |
+|---|---|---|---|
+| Hosting model | **Self-hosted**, your hardware | Vendor cloud | Vendor cloud |
+| Database | **Oracle Autonomous AI DB** (incl. $0 Always Free) | Postgres (vendor-hosted) | Firestore / RTDB (proprietary) |
+| Free tier | **Oracle Always Free — never sleeps into a paid plan** | Free project pauses after 1 week inactivity | Spark plan limits |
+| Auth | JWT + refresh rotation, Google OAuth, API keys, scoped PATs | Supabase Auth | Firebase Auth |
+| Auto REST API | ✅ with RLS policy compiler | ✅ PostgREST | ❌ SDK-first |
+| SQL console | ✅ built-in | ✅ | ❌ |
+| MCP server for AI agents | ✅ built-in | ❌ | ❌ |
+| Realtime | ✅ per-table toggle | ✅ | ✅ |
+| Storage | ✅ local disk / OCI adapter | ✅ | ✅ |
+| Data ownership | **100% yours** — your Oracle schema | Exportable, vendor-hosted | Vendor-locked export |
+| Rate limiting & audit log | ✅ built-in (IP + per-account) | Partial | Extra product |
 
 # 🤝 Contributing
 
@@ -230,7 +272,7 @@ PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Good first issues: OCI s
 
 # 📄 License
 
-[MIT](LICENSE) © Dhara contributors. Oracle, Supabase and Firebase are trademarks of their respective owners; Dhara is not affiliated with or endorsed by Oracle Corporation.
+[Apache-2.0](LICENSE) © Dhara contributors. Oracle, Supabase and Firebase are trademarks of their respective owners; Dhara is not affiliated with or endorsed by Oracle Corporation.
 
 ---
 

@@ -202,14 +202,44 @@ export function requireScope(ctx: AuthCtx, scope: PatScope): void {
 }
 
 export function rateLimitRequest(req: Request, bucket: string, limit = 240) {
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    req.headers.get("x-real-ip") ??
-    "local";
-  const res = rateLimit(`${bucket}:${ip}`, limit);
+  const res = rateLimit(`${bucket}:${clientIp(req)}`, limit);
   if (!res.ok) {
     throw new DharaError(
       `Rate limit exceeded. Retry in ${Math.ceil(res.resetInMs / 1000)}s.`,
+      429,
+      "rate_limited"
+    );
+  }
+}
+
+/**
+ * Client IP for rate limiting / audit — security (C3): `x-forwarded-for` is
+ * client-controllable and previously let anyone rotate their identity and
+ * bypass every limiter. It is only honored when the deployment explicitly
+ * runs behind a proxy that overwrites it (DHARA_TRUST_PROXY=1). Without it
+ * all callers share one "local" bucket — fail-closed.
+ */
+export function clientIp(req: Request): string {
+  if (process.env.DHARA_TRUST_PROXY === "1") {
+    return (
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+      req.headers.get("x-real-ip")?.trim() ||
+      "local"
+    );
+  }
+  return "local";
+}
+
+/**
+ * Per-account limiter — security (C3): keyed by the identity being attacked
+ * (e.g. the login email), not the caller IP, so rotating X-Forwarded-For no
+ * longer defeats brute-force protection on a single account.
+ */
+export function rateLimitAccount(key: string, limit = 5, windowMs = 15 * 60_000): void {
+  const res = rateLimit(`acct:${key}`, limit, windowMs);
+  if (!res.ok) {
+    throw new DharaError(
+      `Too many attempts. Retry in ${Math.ceil(res.resetInMs / 1000)}s.`,
       429,
       "rate_limited"
     );
@@ -280,10 +310,7 @@ export async function audit(
   } = {}
 ): Promise<void> {
   try {
-    const ip =
-      opts.req?.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-      opts.req?.headers.get("x-real-ip") ??
-      "local";
+    const ip = opts.req ? clientIp(opts.req) : "local";
     await q(
       `INSERT INTO DHARA_AUDIT (ID, USER_ID, EMAIL, ACTION, TARGET, PROJECT_ID, DETAIL, IP)
        VALUES (:id, :usr, :email, :action, :target, :pid, :detail, :ip)`,

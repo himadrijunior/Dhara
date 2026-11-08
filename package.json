@@ -2,7 +2,7 @@
   "name": "dhara",
   "version": "1.1.0",
   "description": "Open-source, self-hostable Backend-as-a-Service (Supabase × Firebase hybrid) that runs entirely on your free Oracle Autonomous AI Database — Auth, auto tables, RLS policies, realtime, webhooks, storage, SQL console, Data API v1, MCP server and an AI-organized dashboard.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/himadrijunior/Dhara.git"

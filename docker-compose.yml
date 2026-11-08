@@ -3,13 +3,20 @@ services:
     build: .
     container_name: dhara-db
     ports:
-      - "3000:3000"
+      # security (C3): bind to loopback — put Caddy/Nginx in front for TLS and
+      # set DHARA_TRUST_PROXY=1 so X-Forwarded-For is honored only from them
+      - "127.0.0.1:3000:3000"
     volumes:
       - dhara-config:/app/.dhara
       - dhara-storage:/app/storage-uploads
     environment:
       - NODE_ENV=production
       - PORT=3000
+      # uncomment when running behind the Caddy/Nginx proxy on the host:
+      # - DHARA_TRUST_PROXY=1
+      # optional first-run hardening: require this token in `x-setup-token`
+      # before the Setup Wizard can configure the instance:
+      # - DHARA_SETUP_TOKEN=change-me
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/setup').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
