@@ -186,3 +186,41 @@ New regression checks (all **PASS**): unauth wallet upload → 401 ·
 unauth setup reconfigure → 401 · `GET /api/setup` anon → config hidden ·
 zip-bomb upload → 400 `wallet_too_big` · CSP+nosniff present ·
 per-account login limit survives XFF rotation (429 at attempt 6).
+
+---
+
+## v1.2.2 — Re-audit sweep + Email security model (2026-11-08)
+
+An independent re-audit re-ran every v1.2.0 probe against the new code
+(all still blocked) and surfaced the issues below. All are now fixed and
+covered by regression checks in `scripts/pentest.py` (82 checks total).
+
+| ID | Sev | Finding | Fix |
+| --- | --- | --- | --- |
+| R1 | Medium | **Forged-header zip bomb**: the pre-inflate size check trusted the zip header's `uncompressedSize` — a header claiming "100 B" let a 400 MB payload inflate fully (RSS 270→696 MB) | `readCapped()` streams each entry and aborts mid-inflate once the real byte count exceeds the cap; oversized `Content-Length` rejected before buffering |
+| R2 | Medium | Without `DHARA_TRUST_PROXY` every caller shared one `"local"` rate-limit bucket — 11 bad logins locked the whole instance out of login for a minute | IP buckets count **failed logins only**; shared-bucket ceiling raised; compose ships Caddy + `DHARA_TRUST_PROXY=1`; boot warning when unset |
+| R3 | Medium | Unconfigured instance: anyone could run setup / upload a wallet / claim the first owner slot | **First-run setup token**: auto-generated `.dhara/setup-token` (0600), printed once, required by setup + wallet + first owner signup, consumed after owner exists |
+| R4 | Medium | `getPublicOrigin()` trusted `X-Forwarded-Host`/`Host` — sitemap poisoning today, reset-link poisoning tomorrow | Single source of truth `DHARA_PUBLIC_URL`; forwarded headers honored only with `DHARA_TRUST_PROXY=1`; all email action links use the same source |
+| R5 | Low | `refresh` and OAuth endpoints had no rate limit; raw XFF stored in session rows | rate limits added; `sanitizeIp()` on stored IPs |
+| R6 | Low | CSP had `unsafe-inline` scripts and `connect-src ws: wss:` (any host) | documented (needed by Next hydration until a nonce-CSP lands); tracked for a follow-up |
+| R7 | Low | Canonical/OG/JSON-LD fell back to `http://localhost:3000` in prod | `DHARA_PUBLIC_URL` first, `NEXT_PUBLIC_SITE_URL` second |
+| R8 | Low | `getJwtSecret()` fell back to a hardcoded dev secret when unconfigured | missing secret is a **hard boot error** (`not_configured`) |
+| H5 | High | Platform session JWTs drove the v1 data API **without project ownership checks** — any member could CRUD any project's tables by ID; open signup amplified it | `v1ProjectAllowed()` enforces owner/admin for `user`-kind + PAT-kind; **signup policy** `open\|invite\|closed` (default **invite**) with single-use email invites |
+| H6 | High | OAuth `state` was `Math.random()` with no cookie; auto-link didn't require `email_verified` | `crypto.randomBytes(16)` state in HttpOnly cookie, timing-safe compare; `email_verified === true` enforced in `upsertOAuthUser` and callback |
+| H7 | High | Refresh tokens in `localStorage`; OAuth returned tokens in the URL fragment | refresh token → **HttpOnly SameSite=Strict cookie** scoped to `/api/auth`; access token memory-only; OAuth → single-use 60-second code + POST exchange |
+| M12 | Medium | Webhook SSRF guard didn't resolve DNS and missed `::ffff:` hex-mapped forms (WHATWG URL canonicalizes `http://[::ffff:127.0.0.1]/` → `[::ffff:7f00:1]`) | `dns.lookup({all:true})` + `isPrivateIp()` validates every resolved address (dotted AND hex-mapped), re-checked per delivery |
+| M13 | Medium | Access JWT lived 24 h; revoking a session didn't kill its access token; no refresh-reuse detection | access TTL **15 min**; `sid` checked against live sessions (60 s cache) on every bearer path; refresh rotation is one-time — **reuse revokes the whole session family** |
+| M14 | Medium | Realtime admin HTTP (`:3004`) bound all interfaces; Socket.IO CORS `origin: "*"`; empty internal secret silently disabled `/emit` auth | admin binds `127.0.0.1`; CORS pinned to `DHARA_PUBLIC_URL` + localhost; empty secret **fails boot** |
+
+**Email feature security model** (new in v1.2.2): reset/verify/invite tokens
+are 32 bytes, stored only as SHA-256 hashes, single-use, short-lived (30 min
+reset / 24 h verify / 7 d invite); `forgot` is enumeration-proof and rate
+limited per IP and per mailbox; password reset revokes all sessions and
+requires 12+ chars; links are built from `DHARA_PUBLIC_URL` only.
+
+**Regression suite**: `scripts/pentest.py` — 82 checks, **82/82 passing**
+against a live instance (Oracle Always Free), including the forged-header
+bomb (400 `wallet_too_big` in 0.2 s), cookie flags, session-family reuse,
+enumeration-proof forgot, invite gates and shared-bucket enforcement.
+`npm test` adds 62 deterministic vitest unit tests (RLS compiler, filter
+parser, SSRF guard, storage paths); CI runs tsc + eslint + tests + audit.
