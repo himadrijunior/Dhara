@@ -193,6 +193,7 @@ When you're ready to deploy (Docker Compose, an Oracle Cloud Always Free VM, Cad
 
 | Version | What changed |
 |---|---|
+| **v1.2.1** | SEO & AEO: dynamic host-aware `robots.txt` (`/api/` disallowed, AI answer-engine crawlers welcomed), per-instance `sitemap.xml`, OpenGraph/Twitter cards, canonical URL, SoftwareApplication JSON-LD |
 | **v1.2.0** | External-audit fixes: wallet upload now auth-guarded + allowlisted + size-capped (zip-bomb proof), `/api/setup` fail-closed (no more fail-open on DB outage), per-account rate limiting survives `X-Forwarded-For` spoofing, security headers (CSP/HSTS/nosniff), `tsc` build gate on, license unified to Apache-2.0 — **63/63 pentest** |
 | **v1.1.1** | Thin-mode wallet fix (`configDir` → TNS aliases resolve; cold-start connect 878 ms), pentest tooling hardened (process-group kill, credentials read from env/untracked files only), 57/57 re-verified incl. MCP smoke test |
 | **v1.1.0** | Security hardening: tenant isolation everywhere, PAT scopes, SSRF guard, SQL privilege gates, rate limiting, audit log — 9 findings fixed, 57/57 pentest |

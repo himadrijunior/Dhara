@@ -2,6 +2,30 @@
 
 All notable changes to Dhara.
 
+## [1.2.1] — 2026-11-08
+
+### SEO & AEO: crawl surface & structured data
+
+- **Dynamic, host-aware `robots.txt`** (Next.js metadata route, replaces the static file): public pages open to search engines and AI answer-engine crawlers (GPTBot, OAI-SearchBot, ClaudeBot, PerplexityBot, Google-Extended, …); the entire `/api/` surface (auth, data API, MCP, setup, wallet) is disallowed for every crawler.
+- **Per-instance `sitemap.xml`** with absolute URLs derived from request headers — correct on any self-hosted domain with zero configuration.
+- **OpenGraph + Twitter card metadata**, canonical URL, `robots: index,follow`, and `metadataBase` (override with `NEXT_PUBLIC_SITE_URL`).
+- **SoftwareApplication JSON-LD** structured data (name, license, zero-cost offer, author) for rich results and answer engines.
+- Root `CHANGELOG.md` backfilled with the v1.2.0 security release.
+
+## [1.2.0] — 2026-11-08
+
+### External-audit fixes (independent security review — C1/C2/C3 + M/H/L findings)
+
+- **C1 — wallet upload (Critical)**: `/api/setup/wallet` now requires the instance owner, accepts only wallet archives, and caps archive size/entries — zip-bomb proof.
+- **C2 — setup fail-open (Critical)**: `/api/setup` is fail-closed — with the DB unreachable the request is rejected, so an outage can no longer be abused to reconfigure credentials (no more unauthenticated instance takeover via the outage window).
+- **C3 — rate-limit bypass (High)**: limits are now keyed per account (with sanitized IP handling) instead of the spoofable `X-Forwarded-For` header alone.
+- **M10 — info disclosure**: `GET /api/setup` no longer reveals the Oracle user / connect string to unauthenticated callers.
+- **M11 — security headers**: CSP, HSTS, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`, `X-Frame-Options: DENY`.
+- **H4 — Caddyfile**: removed the `?XTransformPort=` arbitrary-localhost-port forwarding hole.
+- **H9 — build gate**: `tsc` type errors now fail the production build.
+- **L17 — license**: unified to Apache-2.0 across the repo.
+- Pentest suite extended to 63 checks — 63/63 passing.
+
 ## [1.1.0] — 2026-11-08
 
 ### Security hardening release (full ECC-methodology audit)
